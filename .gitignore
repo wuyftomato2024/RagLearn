@@ -1,0 +1,12 @@
+myenv/
+__pycache__/
+.vscode/
+temp.pdf
+temp.txt
+temp0.txt
+temp1.txt
+utils_demo.py
+utils.py
+main_sample.py
+main copy.py
+main_demo.py
