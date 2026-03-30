@@ -14,9 +14,12 @@ embedding_model = OpenAIEmbeddings()
 
 
 # 因为fastapi用的是异步上传，所以这里要加上异步“async” 
-async def ragChat(question , memory ,upload_file ,openai_apk_key):
+async def ragChat(question , memory ,upload_file ,openai_apk_key ,top_k):
     # 定义模型
     model = ChatOpenAI(model="gpt-3.5-turbo",openai_api_key = openai_apk_key)
+    # 判断top_k的值，如果非法就报错
+    if top_k < 1 or top_k > 5 :
+        raise HTTPException(status_code=400 , detail="top_k must be between 1 and 5")
 
     # 调用全局函数的db而不是重新生成一个db
     global db
@@ -100,6 +103,7 @@ async def ragChat(question , memory ,upload_file ,openai_apk_key):
                     )
             texts = text_splitters.split_documents(docs)
 
+            # 循环 给text里面a新增一个metadata，名字叫做file_name，而内容是上面的file_name
             for text in texts:
                 text.metadata["file_name"] = file_name
 
@@ -110,9 +114,8 @@ async def ragChat(question , memory ,upload_file ,openai_apk_key):
     elif db is None :
         raise HTTPException(status_code=400 , detail="please upload a txt or pdf file first")
     
-
-    # 把数据库变成一个“检索器”。
-    db_retriever = db.as_retriever() 
+    # 把数据库变成一个“检索器”。后面的search_kwargs是固定写法，是搜索参数的意思，必须是要写成字典的形式
+    db_retriever = db.as_retriever(search_kwargs= {"k": top_k}) 
     # 创建一个“带记忆 + 会检索2资料”的问答链。
     
     qa = ConversationalRetrievalChain.from_llm(
@@ -133,10 +136,35 @@ async def ragChat(question , memory ,upload_file ,openai_apk_key):
             history_list.append(HistoryItem(role = "human",content = msg.content))
         elif    isinstance(msg,AIMessage):
             history_list.append(HistoryItem(role = "ai" , content = msg.content))
-
+    
+    # 记数用的dict
+    sources_file = {}
+    # 记录用List
     source_file = []
-    for doc in response["source_documents"] :
-        source_file.append(doc.metadata["file_name"])
+    # 当前最大count
+    max_count = 0
+    # 次数最高的source_name
+    best_source_name = ""
+
+    for doc in response["source_documents"]:
+        source_name = doc.metadata["file_name"]
+        # 如果source_name不在sources_file这个dict里面
+        if source_name not in sources_file :
+            # 给sources_file[source_name]这个key新增一个value，并存放再这个dict里面
+            sources_file[source_name] = 1
+        else :
+            # 反之是sources_file[source_name]这个原来的value +1     
+            # dirt[key]会自动取出values，这个是dict的固定写法
+            sources_file[source_name] = sources_file[source_name] +1
+
+    # 这里的写法和前面的enumerate（）很像，但那个是负责给数据，这里的items（）是负责给的key和value
+    for source_name ,count in sources_file.items():
+        if count > max_count :
+            max_count = count 
+            best_source_name = source_name
+    
+    if best_source_name :
+        source_file.append(best_source_name)
 
     return ChatResponse(
         answer = response["answer"] ,

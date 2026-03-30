@@ -2,7 +2,7 @@ from fastapi import FastAPI, UploadFile, File, Form
 from langchain.memory import ConversationBufferMemory
 from utils_txt import ragChat
 from model import ChatResponse
-from typing import List ,Optional ,Annotated
+from typing import List 
 
 # 创建 FastAPI 应用
 app = FastAPI()
@@ -12,7 +12,7 @@ app = FastAPI()
 memory = ConversationBufferMemory(
     memory_key= "chat_history",
     return_messages=True ,
-    output_key="answer"
+    output_key="answer" 
 )
 
 # 测试接口
@@ -27,7 +27,8 @@ async def ragchat(
     question : str = Form(...),
     openai_api_key : str =Form(...),
     # 把上传文件变成一个List，以上传复数文件
-    upload_file : List [UploadFile] | None = File(None)
+    upload_file : List [UploadFile] | None = File(None),
+    top_k :int = Form(3,ge=1,le=5)
 
     
 ):
@@ -37,7 +38,8 @@ async def ragchat(
         question = question,
         memory = memory,
         upload_file = upload_file,
-        openai_apk_key = openai_api_key)
+        openai_apk_key = openai_api_key,
+        top_k = top_k)
 
     # 把结果返回给前端
     return response
