@@ -5,6 +5,7 @@ from langchain_community.vectorstores import FAISS
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain.chains import ConversationalRetrievalChain
 from langchain_core.messages import AIMessage ,HumanMessage
+from langchain_core.prompts import ChatPromptTemplate
 from fastapi import HTTPException
 from model import ChatResponse ,HistoryItem
 
@@ -14,12 +15,55 @@ embedding_model = OpenAIEmbeddings()
 
 
 # 因为fastapi用的是异步上传，所以这里要加上异步“async” 
-async def ragChat(question , memory ,upload_file ,openai_apk_key ,top_k):
+async def ragChat(question , memory ,upload_file ,openai_api_key ,top_k):
     # 定义模型
-    model = ChatOpenAI(model="gpt-3.5-turbo",openai_api_key = openai_apk_key)
+    model = ChatOpenAI(model="gpt-3.5-turbo",openai_api_key = openai_api_key)
     # 判断top_k的值，如果非法就报错
-    if top_k < 1 or top_k > 5 :
+    if top_k < 1 or top_k > 3 :
         raise HTTPException(status_code=400 , detail="top_k must be between 1 and 5")
+    
+    simple_system_message = """Please answer concisely and clearly.
+                                Only answer the main point.
+                                Do not give too many examples.
+                                If the answer is not clearly stated in the provided context, do not make up information.
+                                Instead, say that the context does not clearly mention it."""
+    normal_system_message = """ 清楚回答问题
+                                可适当说明
+                                没有资料就明确说没有
+                                不要编造"""
+    human_message = """Context:{context}
+                        Question:{question}"""
+    
+    # 创建关键词库
+    simple_words = ["简单","简洁","简短","少废话","易懂","少例子"]
+    # 简单模式的开关
+    is_simple_mode = False
+    for kw in simple_words:
+        if kw in question :
+            is_simple_mode = True
+            break
+    if is_simple_mode is True :
+                # 创建一个对话提示词模板     用""""内容""""的写法是因为，写多行
+                qa_prompt = ChatPromptTemplate.from_messages([
+            (
+                "system", simple_system_message
+            ),
+            (
+                "human", human_message
+            )
+        ])
+    
+    else:
+        qa_prompt = ChatPromptTemplate.from_messages([
+            (
+                "system", normal_system_message
+            ),
+            (
+                "human", human_message
+            )
+        ])
+    
+    
 
     # 调用全局函数的db而不是重新生成一个db
     global db
@@ -122,7 +166,8 @@ async def ragChat(question , memory ,upload_file ,openai_apk_key ,top_k):
         llm = model ,
         retriever = db_retriever,
         memory = memory ,
-        return_source_documents = True
+        return_source_documents = True ,
+        combine_docs_chain_kwargs = {"prompt":qa_prompt}
     )
     response = qa.invoke({"question" : question})
 
@@ -142,9 +187,6 @@ async def ragChat(question , memory ,upload_file ,openai_apk_key ,top_k):
     # 记录用List
     source_file = []
     # 当前最大count
-    max_count = 0
-    # 次数最高的source_name
-    best_source_name = ""
 
     for doc in response["source_documents"]:
         source_name = doc.metadata["file_name"]
@@ -156,15 +198,17 @@ async def ragChat(question , memory ,upload_file ,openai_apk_key ,top_k):
             # 反之是sources_file[source_name]这个原来的value +1     
             # dirt[key]会自动取出values，这个是dict的固定写法
             sources_file[source_name] = sources_file[source_name] +1
+    print(doc.metadata["file_name"])
 
     # 这里的写法和前面的enumerate（）很像，但那个是负责给数据，这里的items（）是负责给的key和value
-    for source_name ,count in sources_file.items():
-        if count > max_count :
-            max_count = count 
-            best_source_name = source_name
-    
-    if best_source_name :
-        source_file.append(best_source_name)
+    for source_name, count in sources_file.items():
+        if count >= 1:           
+            source_file.append(source_name)
+
+    # print(response["source_documents"])
+    # print(sources_file)
+    # print(response["answer"])
+    # print(repr(response["answer"]))
 
     return ChatResponse(
         answer = response["answer"] ,

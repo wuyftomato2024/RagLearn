@@ -28,7 +28,7 @@ async def ragchat(
     openai_api_key : str =Form(...),
     # 把上传文件变成一个List，以上传复数文件
     upload_file : List [UploadFile] | None = File(None),
-    top_k :int = Form(3,ge=1,le=5)
+    top_k :int = Form(2,ge=1,le=3)
 
     
 ):
@@ -38,7 +38,7 @@ async def ragchat(
         question = question,
         memory = memory,
         upload_file = upload_file,
-        openai_apk_key = openai_api_key,
+        openai_api_key = openai_api_key,
         top_k = top_k)
 
     # 把结果返回给前端
