@@ -8,3 +8,7 @@ class ChatResponse(BaseModel):
     answer :str
     chatHistory :list[HistoryItem]
     tag: list[str]
+
+class ApiResponse(BaseModel):
+    status :str
+    data :ChatResponse

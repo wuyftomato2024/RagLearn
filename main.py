@@ -1,7 +1,8 @@
-from fastapi import FastAPI, UploadFile, File, Form
+from fastapi import FastAPI, UploadFile, File, Form ,HTTPException
+from fastapi.responses import JSONResponse
 from langchain.memory import ConversationBufferMemory
 from utils_txt import ragChat
-from model import ChatResponse
+from model import ChatResponse ,ApiResponse
 from typing import List 
 
 # 创建 FastAPI 应用
@@ -20,15 +21,39 @@ memory = ConversationBufferMemory(
 def root():
     return {"message":"Fastapi was running"}
 
+# HTTPException之所以好像没有调用，是因为后端触发了raise的话，fastapi其实就已经知道有这个东西的存在了，只不过没写出来的话，就是以别的格式返回现在做的是让他以一个固定格式返回 。exc :HTTPException 这种写法是给他加一个类型说明，让人一眼能看出来这个是哪种异常
+@app.exception_handler(HTTPException)
+async def setError(request,exc :HTTPException):
+    return JSONResponse(
+        status_code = exc.status_code,
+        content = {
+            "status":"fail",
+            "data" : None,
+            "detail":exc.detail
+        }
+    )
+
+# Exception是意料外的错误
+@app.exception_handler(Exception)
+async def error(request,exc :Exception):
+    return JSONResponse(
+        status_code= 500,
+        content={
+            "status":"fail",
+            "data" : None,
+            "detail":str(exc)
+        }
+    )
+
 # RAG 问答接口
-@app.post("/chat" ,response_model=ChatResponse)
+@app.post("/chat" ,response_model=ApiResponse)
 async def ragchat(
     # Form为表单里接收普通数据，File为表单里接收普通数据
     question : str = Form(...),
     openai_api_key : str =Form(...),
     # 把上传文件变成一个List，以上传复数文件
     upload_file : List [UploadFile] | None = File(None),
-    top_k :int = Form(2,ge=1,le=3)
+    top_k :int = Form(2,ge=1,le=2)
 
     
 ):

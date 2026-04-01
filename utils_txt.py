@@ -7,7 +7,7 @@ from langchain.chains import ConversationalRetrievalChain
 from langchain_core.messages import AIMessage ,HumanMessage
 from langchain_core.prompts import ChatPromptTemplate
 from fastapi import HTTPException
-from model import ChatResponse ,HistoryItem
+from model import ChatResponse ,HistoryItem ,ApiResponse
 
 db = None
 # 嵌入模型  把每个文本块转成向量（变成数字）
@@ -20,7 +20,7 @@ async def ragChat(question , memory ,upload_file ,openai_api_key ,top_k):
     model = ChatOpenAI(model="gpt-3.5-turbo",openai_api_key = openai_api_key)
     # 判断top_k的值，如果非法就报错
     if top_k < 1 or top_k > 3 :
-        raise HTTPException(status_code=400 , detail="top_k must be between 1 and 5")
+        raise HTTPException(status_code=400 , detail="top_k must be between 1 and 3")
     
     simple_system_message = """Please answer concisely and clearly.
                                 Only answer the main point.
@@ -119,10 +119,12 @@ async def ragChat(question , memory ,upload_file ,openai_api_key ,top_k):
         # index是自动从0开始赋值，有点类似于i等于0，i++那种感觉，而enumerate()是一个特殊用法，用来给东西增加编号
         # enumerate()和index是绑定用法，其实index本身是没有值的，这个值反而是enumerate给赋予的
         for index , file in enumerate(upload_file):
-            file_content = await file.read()
-            if not file_content :
-                raise HTTPException(status_code=400 ,detail="please upload file")
             file_name = file.filename
+            file_content = await file.read()
+            
+            if not file_content :
+                raise HTTPException(status_code=400 ,detail=f"{file_name} is empty")
+            
             if file_name.endswith(".txt"):
                 temp_file_path = f"temp{index}.txt"
                 with open (temp_file_path,"wb") as temp_file :
@@ -138,7 +140,7 @@ async def ragChat(question , memory ,upload_file ,openai_api_key ,top_k):
                 docs = loader.load()
 
             else :
-                raise HTTPException(status_code=400 ,detail="only txt and pdf are supported ")
+                raise HTTPException(status_code=400 ,detail=f"{file_name} is not a supported file type. Only txt and pdf are supported. ")
         
             text_splitters = RecursiveCharacterTextSplitter(
                     chunk_size=1000,
@@ -210,10 +212,18 @@ async def ragChat(question , memory ,upload_file ,openai_api_key ,top_k):
     # print(response["answer"])
     # print(repr(response["answer"]))
 
-    return ChatResponse(
-        answer = response["answer"] ,
-        chatHistory = history_list ,
-        tag = source_file
+    # return ChatResponse(
+    #     answer = response["answer"] ,
+    #     chatHistory = history_list ,
+    #     tag = source_file
+    # )
+    
+    return ApiResponse(
+        status = "ok",
+        data = ChatResponse(
+            answer = response["answer"] ,
+            chatHistory = history_list ,
+            tag = source_file)
     )
 
 
