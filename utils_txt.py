@@ -200,7 +200,6 @@ async def ragChat(question , memory ,upload_file ,openai_api_key ,top_k):
             # 反之是sources_file[source_name]这个原来的value +1     
             # dirt[key]会自动取出values，这个是dict的固定写法
             sources_file[source_name] = sources_file[source_name] +1
-    print(doc.metadata["file_name"])
 
     # 这里的写法和前面的enumerate（）很像，但那个是负责给数据，这里的items（）是负责给的key和value
     for source_name, count in sources_file.items():
