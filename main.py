@@ -2,7 +2,7 @@ from fastapi import FastAPI, UploadFile, File, Form ,HTTPException
 from fastapi.responses import JSONResponse
 from langchain.memory import ConversationBufferMemory
 from utils_txt import ragChat
-from model import ChatResponse ,ApiResponse
+from model import ApiResponse
 from typing import List 
 
 # 创建 FastAPI 应用
