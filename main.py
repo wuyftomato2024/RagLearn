@@ -53,9 +53,7 @@ async def ragchat(
     openai_api_key : str =Form(...),
     # 把上传文件变成一个List，以上传复数文件
     upload_file : List [UploadFile] | None = File(None),
-    top_k :int = Form(2,ge=1,le=2)
-
-    
+    top_k :int = Form(3,ge=1,le=3)
 ):
 
     # 调用你已经写好的 utils 里面的函数

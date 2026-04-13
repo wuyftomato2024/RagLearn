@@ -52,14 +52,14 @@ async def ragChat(question , memory ,upload_file ,openai_api_key ,top_k):
 
     history_list = chat_history(memory)
     
-    source_file = source_file_organize(response)
+    source_files = source_file_organize(response)
     
     return ApiResponse(
         status = "ok",
         data = ChatResponse(
             answer = response["answer"] ,
             chatHistory = history_list ,
-            tag = source_file)
+            tag = source_files)
     )
 
 
@@ -183,26 +183,34 @@ def chat_history(memory):
 # 整理 source/tag
 # *****
 def source_file_organize(response):
-    # 记数用的dict
-    sources_file = {}
+
+    question_words = ["python","编程","语言"]
+    
     # 记录用List
-    source_file = []
-    # 当前最大count
+    source_files = []
+    file_scores = {}
 
     for doc in response["source_documents"]:
         source_name = doc.metadata["file_name"]
-        # 如果source_name不在sources_file这个dict里面
-        if source_name not in sources_file :
-            # 给sources_file[source_name]这个key新增一个value，并存放再这个dict里面
-            sources_file[source_name] = 1
-        else :
-            # 反之是sources_file[source_name]这个原来的value +1     
-            # dirt[key]会自动取出values，这个是dict的固定写法
-            sources_file[source_name] = sources_file[source_name] +1
+        page_content = doc.page_content
+        chunk_score = 0
+
+        for kw in question_words:
+            if kw in page_content:
+                chunk_score += 1 
+        if chunk_score > 0 :
+            # 如果source_name不在sources_file这个dict里面
+            if source_name not in file_scores :
+                # 给sources_file[source_name]这个key新增一个value，并存放再这个dict里面
+                file_scores[source_name] = chunk_score
+            else :
+                # 反之是sources_file[source_name]这个原来的value +1     
+                # dirt[key]会自动取出values，这个是dict的固定写法
+                file_scores[source_name] = file_scores[source_name] + chunk_score
 
     # 这里的写法和前面的enumerate（）很像，但那个是负责给数据，这里的items（）是负责给的key和value
-    for source_name, count in sources_file.items():
+    for source_name, count in file_scores.items():
         if count >= 1:           
-            source_file.append(source_name)
+            source_files.append(source_name)
 
-    return source_file
+    return source_files
