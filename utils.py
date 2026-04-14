@@ -12,6 +12,9 @@ import os
 
 db = None
 
+# *****
+# RagChat函数
+# *****
 # 因为fastapi用的是异步上传，所以这里要加上异步“async” 
 async def ragChat(question , memory ,upload_file ,openai_api_key ,top_k):
     # 嵌入模型  把每个文本块转成向量（变成数字）
@@ -62,8 +65,28 @@ async def ragChat(question , memory ,upload_file ,openai_api_key ,top_k):
             tag = source_files)
     )
 
+# *****
+# 普通Chat函数
+# *****
+def normalChat(question ,memory ,openai_api_key):
 
-# 回答的是LLM，LLM拿到了检索后的相关内容再来进行回答
+    model = ChatOpenAI(model="gpt-3.5-turbo",openai_api_key =openai_api_key)
+
+    response = model.invoke(question)
+    # print(response)
+
+    memory.chat_memory.messages.append(HumanMessage(content=question))
+    memory.chat_memory.messages.append(AIMessage(content=response.content))
+
+    history_list = chat_history(memory)
+
+    return ApiResponse(
+        status = "ok",
+        data = ChatResponse(
+            answer = response.content ,
+            chatHistory = history_list ,
+            tag = [])
+    )
 
 # *****
 # 定义prompt提示词模板函数

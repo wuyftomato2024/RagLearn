@@ -1,7 +1,8 @@
 from fastapi import FastAPI, UploadFile, File, Form ,HTTPException
 from fastapi.responses import JSONResponse
 from langchain.memory import ConversationBufferMemory
-from utils_txt import ragChat
+from utils import ragChat ,normalChat 
+import utils
 from model import ApiResponse
 from typing import List 
 
@@ -55,14 +56,42 @@ async def ragchat(
     upload_file : List [UploadFile] | None = File(None),
     top_k :int = Form(3,ge=1,le=3)
 ):
+    
+    if upload_file :
+        # 调用你已经写好的 utils 里面的函数
+        response = await ragChat(
+            question = question,
+            memory = memory,
+            upload_file = upload_file,
+            openai_api_key = openai_api_key,
+            top_k = top_k)
 
-    # 调用你已经写好的 utils 里面的函数
-    response = await ragChat(
-        question = question,
-        memory = memory,
-        upload_file = upload_file,
-        openai_api_key = openai_api_key,
-        top_k = top_k)
-
+    elif utils.db is not None :
+        response = await ragChat(
+            question = question,
+            memory = memory,
+            upload_file = upload_file,
+            openai_api_key = openai_api_key,
+            top_k = top_k)
+    
+    else :
+        response = normalChat(
+        memory =memory ,
+        question = question ,
+        openai_api_key = openai_api_key
+    )
     # 把结果返回给前端
     return response
+
+# @app.post("/normal_chat")
+# def normalModelChat(
+#     question : str = Form(...),
+#     openai_api_key : str =Form(...),
+# ):
+#     response = normalChat(
+#         memory =memory ,
+#         question = question ,
+#         openai_api_key = openai_api_key
+#     )
+
+#     return response
