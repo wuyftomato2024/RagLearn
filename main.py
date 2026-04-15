@@ -1,7 +1,7 @@
 from fastapi import FastAPI, UploadFile, File, Form ,HTTPException
 from fastapi.responses import JSONResponse
 from langchain.memory import ConversationBufferMemory
-from utils import ragChat ,normalChat 
+from utils import ragChat ,normalChat ,judge
 import utils
 from model import ApiResponse
 from typing import List 
@@ -46,7 +46,9 @@ async def error(request,exc :Exception):
         }
     )
 
-# RAG 问答接口
+# *****
+# ragChat接口
+# *****
 @app.post("/chat" ,response_model=ApiResponse)
 async def ragchat(
     # Form为表单里接收普通数据，File为表单里接收普通数据
@@ -65,15 +67,39 @@ async def ragchat(
             upload_file = upload_file,
             openai_api_key = openai_api_key,
             top_k = top_k)
+    
+    elif not upload_file and utils.db is not None :
+        judge_response = judge(
+            question = question,
+            openai_api_key = openai_api_key ,
+            memory = memory
+        ).strip().lower()
 
-    elif utils.db is not None :
-        response = await ragChat(
+        if judge_response == "rag" :
+            response = await ragChat(
             question = question,
             memory = memory,
             upload_file = upload_file,
             openai_api_key = openai_api_key,
             top_k = top_k)
-    
+
+            print("db and rag success")
+        
+        elif  judge_response == "normal":
+            response = normalChat(
+            memory =memory ,
+            question = question ,
+            openai_api_key = openai_api_key
+        )
+            print("db and normal success")
+        else :
+            response = normalChat(
+            memory =memory ,
+            question = question ,
+            openai_api_key = openai_api_key
+        )
+            print("db and normal success")
+
     else :
         response = normalChat(
         memory =memory ,
@@ -82,16 +108,3 @@ async def ragchat(
     )
     # 把结果返回给前端
     return response
-
-# @app.post("/normal_chat")
-# def normalModelChat(
-#     question : str = Form(...),
-#     openai_api_key : str =Form(...),
-# ):
-#     response = normalChat(
-#         memory =memory ,
-#         question = question ,
-#         openai_api_key = openai_api_key
-#     )
-
-#     return response

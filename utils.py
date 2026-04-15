@@ -13,6 +13,23 @@ import os
 db = None
 
 # *****
+# 判断chat模式函数
+# *****
+def judge(question ,openai_api_key ,memory):
+    model = ChatOpenAI(model="gpt-3.5-turbo",openai_api_key=openai_api_key)
+    prompt = judge_prompt()
+    
+    history_list = chat_history(memory)
+    # -4：的意思是，从最后四行开始，到最后 ：的意思是，冒号的左边是从哪里开始，右边是从哪里结束
+    result_history = history_list[-4:]
+
+    # format_messages（）是一个对模板专用的添加方法
+    message = prompt.format_messages(question=question,history =result_history)
+
+    response = model.invoke(message)
+    return response.content
+
+# *****
 # RagChat函数
 # *****
 # 因为fastapi用的是异步上传，所以这里要加上异步“async” 
@@ -89,7 +106,7 @@ def normalChat(question ,memory ,openai_api_key):
     )
 
 # *****
-# 定义prompt提示词模板函数
+# 定义回复模式提示词模板函数
 # *****
 def build_qa_prompt(question):
 # 定义模型回答模板  用""""内容""""的写法是因为，写多行
@@ -237,3 +254,35 @@ def source_file_organize(response):
             source_files.append(source_name)
 
     return source_files
+
+# *****
+# 定义判定chat模式提示词模板函数
+# *****
+def judge_prompt():
+    prompt = ChatPromptTemplate.from_messages([
+            (
+                "system", 
+                """
+                "History" :{history}
+                通过输入的问题，再结合上面的history，即聊天历史去，判断回复是否要参考上传文件
+                只允许返回一个词，不要解释原因，不要添加其他内容：
+
+                - rag：如果当前问题明显需要参考已上传文件，或者是在继续追问文件相关内容
+                - normal：如果当前问题不需要参考已上传文件，或者与文件内容无明显关系
+
+                只能返回：
+                rag
+                或
+                normal
+
+                """
+            ),
+            (
+                "human", 
+                """
+                Question:{question}
+                """
+            )
+        ])
+    
+    return prompt
