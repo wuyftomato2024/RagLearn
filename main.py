@@ -2,7 +2,6 @@ from fastapi import FastAPI, UploadFile, File, Form ,HTTPException
 from fastapi.responses import JSONResponse
 from langchain.memory import ConversationBufferMemory
 from utils import ragChat ,normalChat ,judge
-import utils
 from model import ApiResponse
 from typing import List 
 
@@ -11,11 +10,9 @@ app = FastAPI()
 
 # 先准备一个最简单的 memory
 # 这里只是练习写法，先不用太在意多人共用的问题
-memory = ConversationBufferMemory(
-    memory_key= "chat_history",
-    return_messages=True ,
-    output_key="answer" 
-)
+
+memory_map = {}
+db_map = {}
 
 # 测试接口
 @app.get("/")
@@ -56,45 +53,65 @@ async def ragchat(
     openai_api_key : str =Form(...),
     # 把上传文件变成一个List，以上传复数文件
     upload_file : List [UploadFile] | None = File(None),
-    top_k :int = Form(3,ge=1,le=3)
+    top_k :int = Form(3,ge=1,le=3),
+    session_id :int = Form(...)
 ):
-    
+    if session_id not in db_map :
+        db = None
+        db_map[session_id] = db
+    current_db = db_map[session_id]
+
+    if session_id not in memory_map :
+        memory = ConversationBufferMemory(
+            memory_key= "chat_history",
+            return_messages=True ,
+            output_key="answer"
+            )
+        memory_map[session_id] = memory
+    current_memory = memory_map[session_id]
+
     if upload_file :
         # 调用你已经写好的 utils 里面的函数
-        response = await ragChat(
+        response ,update_db= await ragChat(
             question = question,
-            memory = memory,
+            memory = current_memory,
             upload_file = upload_file,
             openai_api_key = openai_api_key,
-            top_k = top_k)
+            top_k = top_k ,
+            db = current_db
+            )
+        db_map[session_id] = update_db
     
-    elif not upload_file and utils.db is not None :
+    elif not upload_file and db_map[session_id] is not None :
         judge_response = judge(
             question = question,
             openai_api_key = openai_api_key ,
-            memory = memory
+            memory = current_memory
         ).strip().lower()
 
         if judge_response == "rag" :
-            response = await ragChat(
+            response , update_db = await ragChat(
             question = question,
-            memory = memory,
+            memory = current_memory,
             upload_file = upload_file,
             openai_api_key = openai_api_key,
-            top_k = top_k)
+            top_k = top_k ,
+            db = current_db
+            )
+            db_map[session_id] = update_db
 
             print("db and rag success")
         
         elif  judge_response == "normal":
             response = normalChat(
-            memory =memory ,
+            memory =current_memory ,
             question = question ,
             openai_api_key = openai_api_key
         )
             print("db and normal success")
         else :
             response = normalChat(
-            memory =memory ,
+            memory =current_memory ,
             question = question ,
             openai_api_key = openai_api_key
         )
@@ -102,9 +119,11 @@ async def ragchat(
 
     else :
         response = normalChat(
-        memory =memory ,
+        memory =current_memory ,
         question = question ,
         openai_api_key = openai_api_key
     )
+        print(memory_map)
+        print(db_map)
     # 把结果返回给前端
     return response

@@ -10,8 +10,6 @@ from fastapi import HTTPException
 from model import ChatResponse ,HistoryItem ,ApiResponse
 import os
 
-db = None
-
 # *****
 # 判断chat模式函数
 # *****
@@ -33,7 +31,7 @@ def judge(question ,openai_api_key ,memory):
 # RagChat函数
 # *****
 # 因为fastapi用的是异步上传，所以这里要加上异步“async” 
-async def ragChat(question , memory ,upload_file ,openai_api_key ,top_k):
+async def ragChat(question , memory ,upload_file ,openai_api_key ,top_k ,db):
     # 嵌入模型  把每个文本块转成向量（变成数字）
     embedding_model = OpenAIEmbeddings(openai_api_key = openai_api_key)
     # 定义模型
@@ -41,9 +39,6 @@ async def ragChat(question , memory ,upload_file ,openai_api_key ,top_k):
     # 判断top_k的值，如果非法就报错
     if top_k < 1 or top_k > 3 :
         raise HTTPException(status_code=400 , detail="top_k must be between 1 and 3")
-
-    # 调用全局函数的db而不是重新生成一个db
-    global db
 
     # 复数写法
     if upload_file :
@@ -55,6 +50,7 @@ async def ragChat(question , memory ,upload_file ,openai_api_key ,top_k):
     elif db is None :
         raise HTTPException(status_code=400 , detail="please upload a txt or pdf file first")
     
+    current_db = db
     # 把数据库变成一个“检索器”。后面的search_kwargs是固定写法，是搜索参数的意思，必须是要写成字典的形式
     db_retriever = db.as_retriever(search_kwargs= {"k": top_k}) 
     
@@ -80,13 +76,12 @@ async def ragChat(question , memory ,upload_file ,openai_api_key ,top_k):
             answer = response["answer"] ,
             chatHistory = history_list ,
             tag = source_files)
-    )
-
+    ),current_db
+   
 # *****
 # 普通Chat函数
 # *****
 def normalChat(question ,memory ,openai_api_key):
-
     model = ChatOpenAI(model="gpt-3.5-turbo",openai_api_key =openai_api_key)
 
     response = model.invoke(question)
