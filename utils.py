@@ -51,6 +51,7 @@ async def ragChat(question , memory ,upload_file ,openai_api_key ,top_k ,db):
         raise HTTPException(status_code=400 , detail="please upload a txt or pdf file first")
     
     current_db = db
+    
     # 把数据库变成一个“检索器”。后面的search_kwargs是固定写法，是搜索参数的意思，必须是要写成字典的形式
     db_retriever = db.as_retriever(search_kwargs= {"k": top_k}) 
     
