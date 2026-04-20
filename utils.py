@@ -67,9 +67,13 @@ async def ragChat(question , memory ,upload_file ,openai_api_key ,top_k ,db):
     # 调用qa这个问答链，invoke（）里面需要传值的东西，是固定的，不用凭空出现，如果不知道需要用print确认 
     response = qa.invoke({"question" : question})
 
+    chunk_hit = chunk_hit_llm(memory ,question ,response ,openai_api_key)
+
+    print (chunk_hit)
+
     history_list = chat_history(memory)
     
-    source_files = source_file_organize(response)
+    source_files = [chunk_hit]
     
     return ApiResponse(
         status = "ok",
@@ -216,42 +220,6 @@ def chat_history(memory):
     return history_list
 
 # *****
-# 整理 source/tag
-# *****
-def source_file_organize(response):
-
-    question_words = ["python","编程","语言"]
-    
-    # 记录用List
-    source_files = []
-    file_scores = {}
-
-    for doc in response["source_documents"]:
-        source_name = doc.metadata["file_name"]
-        page_content = doc.page_content
-        chunk_score = 0
-
-        for kw in question_words:
-            if kw in page_content:
-                chunk_score += 1 
-        if chunk_score > 0 :
-            # 如果source_name不在sources_file这个dict里面
-            if source_name not in file_scores :
-                # 给sources_file[source_name]这个key新增一个value，并存放再这个dict里面
-                file_scores[source_name] = chunk_score
-            else :
-                # 反之是sources_file[source_name]这个原来的value +1     
-                # dirt[key]会自动取出values，这个是dict的固定写法
-                file_scores[source_name] = file_scores[source_name] + chunk_score
-
-    # 这里的写法和前面的enumerate（）很像，但那个是负责给数据，这里的items（）是负责给的key和value
-    for source_name, count in file_scores.items():
-        if count >= 1:           
-            source_files.append(source_name)
-
-    return source_files
-
-# *****
 # 定义判定chat模式提示词模板函数
 # *****
 def judge_prompt():
@@ -270,6 +238,73 @@ def judge_prompt():
                 rag
                 或
                 normal
+
+                """
+            ),
+            (
+                "human", 
+                """
+                Question:{question}
+                """
+            )
+        ])
+    
+    return prompt
+
+# *****
+# 整理 回答的问题，整理成一个大文件块
+# *****
+def chunk_hit(response):
+
+    ai_text_map = []
+
+    for doc in response["source_documents"]:
+        ai_text = f"filename : {doc.metadata['file_name']} \n file_content :{doc.page_content}"
+        ai_text_map.append(ai_text)
+
+    ai_text_all = "\n".join(ai_text_map)
+
+    return ai_text_all
+
+# *****
+# 命中文件来源本体
+# *****
+def chunk_hit_llm(memory ,question ,response ,openai_api_key):
+    ai_text_all = chunk_hit(response)
+
+    model = ChatOpenAI(model="gpt-3.5-turbo",openai_api_key=openai_api_key)
+    prompt = chunk_hit_prompt()
+    
+    history_list = chat_history(memory)
+
+    result_history = history_list[-4:]
+
+    # format_messages（）是一个对模板专用的添加方法
+    message = prompt.format_messages(
+        question= question ,
+        history = result_history ,
+        ai_text = ai_text_all
+        )
+
+    chunk_response = model.invoke(message)
+    return chunk_response.content 
+
+# *****
+# 命中文件来源本体关键词及模板
+# *****
+def chunk_hit_prompt():
+    prompt = ChatPromptTemplate.from_messages([
+            (
+                "system", 
+                """
+                "History" :{history}
+                "ai_text" :{ai_text}
+                通过输入的问题，再结合上面的history，即聊天历史去，
+                再结合ai_text这个文件块
+                去判断这个问题应该参考ai_text里面的哪一个文件
+
+                只允许返回一个文件名，不要解释原因，不要添加其他内容
+                如果无法明确判断，就返回 None
 
                 """
             ),
