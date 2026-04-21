@@ -83,46 +83,88 @@ async def ragchat(
         db_map[session_id] = update_db
     
     elif not upload_file and db_map[session_id] is not None :
-        judge_response = judge(
-            question = question,
-            openai_api_key = openai_api_key ,
-            memory = current_memory
-        ).strip().lower()
 
-        if judge_response == "rag" :
-            response , update_db = await ragChat(
-            question = question,
-            memory = current_memory,
-            upload_file = upload_file,
-            openai_api_key = openai_api_key,
-            top_k = top_k ,
-            db = current_db
-            )
-            db_map[session_id] = update_db
+        judge_flag = True
 
-            print("db and rag success")
-        
-        elif  judge_response == "normal":
-            response = normalChat(
-            memory =current_memory ,
-            question = question ,
-            openai_api_key = openai_api_key
-        )
-            print("db and normal success")
-        else :
-            response = normalChat(
-            memory =current_memory ,
-            question = question ,
-            openai_api_key = openai_api_key
-        )
-            print("db and normal success")
+        rag_kws = ["文件","文档","pdf","上传","总结","概括"]
+        for rag_kw in rag_kws :
+            if rag_kw in question :
+                response ,update_db= await ragChat(
+                question = question,
+                memory = current_memory,
+                upload_file = upload_file,
+                openai_api_key = openai_api_key,
+                top_k = top_k ,
+                db = current_db
+                )
+                print("is real rag")
+                db_map[session_id] = update_db
+                judge_flag = False
+                break
+            
+        history_kws = ["上一个问题" ,"刚刚说的" ,"继续刚才" ,"刚才那个" ,"上一条"]
+        for history_kw in history_kws :
+            if history_kw in question :
+                response = normalChat(
+                memory =current_memory ,
+                question = question ,
+                openai_api_key = openai_api_key
+                )
+                print("is real normal")
+                judge_flag = False
+                break
+
+        if judge_flag:
+
+            judge_response = judge(
+                question = question,
+                openai_api_key = openai_api_key ,
+                memory = current_memory
+            ).strip().lower()
+
+            if judge_response == "rag" :
+                response , update_db = await ragChat(
+                question = question,
+                memory = current_memory,
+                upload_file = upload_file,
+                openai_api_key = openai_api_key,
+                top_k = top_k ,
+                db = current_db
+                )
+                db_map[session_id] = update_db
+
+                print("db and rag success")
+
+            elif judge_response == "history":
+                response = normalChat(
+                memory =current_memory ,
+                question = question ,
+                openai_api_key = openai_api_key
+                )
+                print("db and history success")
+
+            elif judge_response == "normal":
+                response = normalChat(
+                memory =current_memory ,
+                question = question ,
+                openai_api_key = openai_api_key
+                )
+                print("db and normal success")
+
+            else :
+                response = normalChat(
+                memory =current_memory ,
+                question = question ,
+                openai_api_key = openai_api_key
+                )
+                print("db and normal success")
 
     else :
         response = normalChat(
         memory =current_memory ,
         question = question ,
         openai_api_key = openai_api_key
-    )
+        )
         print(memory_map)
         print(db_map)
     # 把结果返回给前端

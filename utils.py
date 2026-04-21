@@ -8,6 +8,7 @@ from langchain_core.messages import AIMessage ,HumanMessage
 from langchain_core.prompts import ChatPromptTemplate
 from fastapi import HTTPException
 from model import ChatResponse ,HistoryItem ,ApiResponse
+from prompts import judge_prompt ,chunk_hit_prompt ,summary_prompt ,summary_answer_prompt ,build_qa_prompt
 import os
 
 # *****
@@ -67,9 +68,22 @@ async def ragChat(question , memory ,upload_file ,openai_api_key ,top_k ,db):
     # 调用qa这个问答链，invoke（）里面需要传值的东西，是固定的，不用凭空出现，如果不知道需要用print确认 
     response = qa.invoke({"question" : question})
 
-    chunk_hit = chunk_hit_llm(memory ,question ,response ,openai_api_key)
+    # rag内容分支判断（判断这个问题，是否归为总结类）
+    summary_kws = ["总结","概括","主要内容","大意","讲了什么"]
 
-    print (chunk_hit)
+    for summary_kw in summary_kws:
+
+        if summary_kw in question :
+            summary_response = summary(question ,openai_api_key)
+            if summary_response == "True" :
+                print("summer success")
+                summary_answer_response = summary_answer(openai_api_key ,response)
+                result = summary_answer_response
+                
+        else :
+            result = response["answer"]
+
+    chunk_hit = chunk_hit_llm(memory ,question ,response ,openai_api_key)
 
     history_list = chat_history(memory)
     
@@ -78,7 +92,7 @@ async def ragChat(question , memory ,upload_file ,openai_api_key ,top_k ,db):
     return ApiResponse(
         status = "ok",
         data = ChatResponse(
-            answer = response["answer"] ,
+            answer = result ,
             chatHistory = history_list ,
             tag = source_files)
     ),current_db
@@ -89,7 +103,17 @@ async def ragChat(question , memory ,upload_file ,openai_api_key ,top_k ,db):
 def normalChat(question ,memory ,openai_api_key):
     model = ChatOpenAI(model="gpt-3.5-turbo",openai_api_key =openai_api_key)
 
-    response = model.invoke(question)
+    human_content_map = []
+
+    for msg in memory.chat_memory.messages :
+        if isinstance(msg ,HumanMessage):
+            human_content_map.append(msg)
+        if isinstance(msg ,AIMessage):
+            human_content_map.append(msg)
+
+    human_content_map.append(HumanMessage(content = question))
+
+    response = model.invoke(human_content_map)
     # print(response)
 
     memory.chat_memory.messages.append(HumanMessage(content=question))
@@ -104,53 +128,6 @@ def normalChat(question ,memory ,openai_api_key):
             chatHistory = history_list ,
             tag = [])
     )
-
-# *****
-# 定义回复模式提示词模板函数
-# *****
-def build_qa_prompt(question):
-# 定义模型回答模板  用""""内容""""的写法是因为，写多行
-    simple_system_message = """Please answer concisely and clearly.
-                                Only answer the main point.
-                                Do not give too many examples.
-                                If the answer is not clearly stated in the provided context, do not make up information.
-                                Instead, say that the context does not clearly mention it."""
-    normal_system_message = """ 清楚回答问题
-                                可适当说明
-                                没有资料就明确说没有
-                                不要编造"""
-    human_message = """Context:{context}
-                        Question:{question}"""
-    
-    # 创建关键词库
-    simple_words = ["简单","简洁","简短","少废话","易懂","少例子"]
-    # 简单模式的开关
-    is_simple_mode = False
-    for kw in simple_words:
-        if kw in question :
-            is_simple_mode = True
-            break
-    if is_simple_mode is True :
-        qa_prompt = ChatPromptTemplate.from_messages([
-            (
-                "system", simple_system_message
-            ),
-            (
-                "human", human_message
-            )
-        ])
-    
-    else:
-        qa_prompt = ChatPromptTemplate.from_messages([
-            (
-                "system", normal_system_message
-            ),
-            (
-                "human", human_message
-            )
-        ])
-
-    return qa_prompt
 
 # *****
 # 上传文件函数
@@ -220,38 +197,6 @@ def chat_history(memory):
     return history_list
 
 # *****
-# 定义判定chat模式提示词模板函数
-# *****
-def judge_prompt():
-    prompt = ChatPromptTemplate.from_messages([
-            (
-                "system", 
-                """
-                "History" :{history}
-                通过输入的问题，再结合上面的history，即聊天历史去，判断回复是否要参考上传文件
-                只允许返回一个词，不要解释原因，不要添加其他内容：
-
-                - rag：如果当前问题明显需要参考已上传文件，或者是在继续追问文件相关内容
-                - normal：如果当前问题不需要参考已上传文件，或者与文件内容无明显关系
-
-                只能返回：
-                rag
-                或
-                normal
-
-                """
-            ),
-            (
-                "human", 
-                """
-                Question:{question}
-                """
-            )
-        ])
-    
-    return prompt
-
-# *****
 # 整理 回答的问题，整理成一个大文件块
 # *****
 def chunk_hit(response):
@@ -267,7 +212,7 @@ def chunk_hit(response):
     return ai_text_all
 
 # *****
-# 命中文件来源本体
+# 命中文件来源llm
 # *****
 def chunk_hit_llm(memory ,question ,response ,openai_api_key):
     ai_text_all = chunk_hit(response)
@@ -287,33 +232,47 @@ def chunk_hit_llm(memory ,question ,response ,openai_api_key):
         )
 
     chunk_response = model.invoke(message)
-    return chunk_response.content 
+    return chunk_response.content
 
 # *****
-# 命中文件来源本体关键词及模板
+# 判断「概括/总结整份上传文件的整体内容」llm
 # *****
-def chunk_hit_prompt():
-    prompt = ChatPromptTemplate.from_messages([
-            (
-                "system", 
-                """
-                "History" :{history}
-                "ai_text" :{ai_text}
-                通过输入的问题，再结合上面的history，即聊天历史去，
-                再结合ai_text这个文件块
-                去判断这个问题应该参考ai_text里面的哪一个文件
+def summary(question ,openai_api_key):
+    model = ChatOpenAI(model="gpt-3.5-turbo",openai_api_key =openai_api_key)
 
-                只允许返回一个文件名，不要解释原因，不要添加其他内容
-                如果无法明确判断，就返回 None
+    prompt = summary_prompt()
 
-                """
-            ),
-            (
-                "human", 
-                """
-                Question:{question}
-                """
-            )
-        ])
-    
-    return prompt
+    message = prompt.format_messages(question = question)
+
+    summary_response = model.invoke(message)
+
+    return summary_response.content
+
+# *****
+# 提取response结果
+# *****
+def summary_texts(response):
+    summary_text_map = []
+    for doc in  response["source_documents"]:
+        answer = doc.page_content
+        summary_text_map.append(answer)
+
+    summary_text = "\n".join(summary_text_map)
+
+    return summary_text
+
+# *****
+# 判断「结果生成回答」llm
+# *****
+def summary_answer(openai_api_key ,response):
+    text = summary_texts(response)
+
+    model = ChatOpenAI(model="gpt-3.5-turbo",openai_api_key =openai_api_key)
+
+    prompt = summary_answer_prompt()
+
+    message = prompt.format_messages(result = text)
+
+    summary_answer_response = model.invoke(message)
+
+    return summary_answer_response.content
