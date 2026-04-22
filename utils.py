@@ -5,10 +5,10 @@ from langchain_community.vectorstores import FAISS
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain.chains import ConversationalRetrievalChain
 from langchain_core.messages import AIMessage ,HumanMessage
-from langchain_core.prompts import ChatPromptTemplate
 from fastapi import HTTPException
 from model import ChatResponse ,HistoryItem ,ApiResponse
 from prompts import judge_prompt ,chunk_hit_prompt ,summary_prompt ,summary_answer_prompt ,build_qa_prompt
+from sqlService import chatCreate ,chatHistoryGet
 import os
 
 # *****
@@ -72,14 +72,12 @@ async def ragChat(question , memory ,upload_file ,openai_api_key ,top_k ,db):
     summary_kws = ["总结","概括","主要内容","大意","讲了什么"]
 
     for summary_kw in summary_kws:
-
         if summary_kw in question :
             summary_response = summary(question ,openai_api_key)
             if summary_response == "True" :
                 print("summer success")
                 summary_answer_response = summary_answer(openai_api_key ,response)
-                result = summary_answer_response
-                
+                result = summary_answer_response               
         else :
             result = response["answer"]
 
@@ -100,32 +98,32 @@ async def ragChat(question , memory ,upload_file ,openai_api_key ,top_k ,db):
 # *****
 # 普通Chat函数
 # *****
-def normalChat(question ,memory ,openai_api_key):
+def normalChat(question ,openai_api_key ,db ,session_id ,):
     model = ChatOpenAI(model="gpt-3.5-turbo",openai_api_key =openai_api_key)
+    message_list = []
 
-    human_content_map = []
+    sql_messages = chatHistoryGet(db = db ,session_id = session_id)
 
-    for msg in memory.chat_memory.messages :
-        if isinstance(msg ,HumanMessage):
-            human_content_map.append(msg)
-        if isinstance(msg ,AIMessage):
-            human_content_map.append(msg)
+    sql_messages.append(HumanMessage(content = question))
+    
+    response = model.invoke(sql_messages)
 
-    human_content_map.append(HumanMessage(content = question))
+    chatCreate(db = db,session_id =session_id,role = "HumanMessage",content = question)
+    chatCreate(db = db,session_id =session_id,role = "AIMessage",content = response.content)
 
-    response = model.invoke(human_content_map)
-    # print(response)
+    sql_message_2nd = chatHistoryGet(db = db ,session_id = session_id)
 
-    memory.chat_memory.messages.append(HumanMessage(content=question))
-    memory.chat_memory.messages.append(AIMessage(content=response.content))
-
-    history_list = chat_history(memory)
+    for sql_message in sql_message_2nd:
+        if isinstance(sql_message ,HumanMessage):
+            message_list.append(HistoryItem(role = "human",content = sql_message.content))
+        if isinstance(sql_message ,AIMessage):
+            message_list.append(HistoryItem(role = "ai",content = sql_message.content))
 
     return ApiResponse(
         status = "ok",
         data = ChatResponse(
             answer = response.content ,
-            chatHistory = history_list ,
+            chatHistory = message_list ,
             tag = [])
     )
 

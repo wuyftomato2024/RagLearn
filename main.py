@@ -1,15 +1,24 @@
-from fastapi import FastAPI, UploadFile, File, Form ,HTTPException
+from fastapi import FastAPI, UploadFile, File, Form ,HTTPException ,Depends
 from fastapi.responses import JSONResponse
 from langchain.memory import ConversationBufferMemory
-from utils import ragChat ,normalChat ,judge
+from utils import ragChat ,normalChat ,judge 
+from sqlService import chatCreate ,chatHistoryGet
 from model import ApiResponse
 from typing import List 
+from database import engine ,Base ,SessionLocal
+from db_model import DBCreate
 
 # 创建 FastAPI 应用
 app = FastAPI()
 
-# 先准备一个最简单的 memory
-# 这里只是练习写法，先不用太在意多人共用的问题
+Base.metadata.create_all(bind=engine)
+
+def get_db():
+    db = SessionLocal()
+    try :
+        yield db
+    finally :
+        db.close()
 
 memory_map = {}
 db_map = {}
@@ -54,7 +63,8 @@ async def ragchat(
     # 把上传文件变成一个List，以上传复数文件
     upload_file : List [UploadFile] | None = File(None),
     top_k :int = Form(3,ge=1,le=3),
-    session_id :int = Form(...)
+    session_id :int = Form(...) ,
+    sql = Depends(get_db)
 ):
     if session_id not in db_map :
         db = None
@@ -108,7 +118,9 @@ async def ragchat(
                 response = normalChat(
                 memory =current_memory ,
                 question = question ,
-                openai_api_key = openai_api_key
+                openai_api_key = openai_api_key ,
+                db = sql ,
+                session_id = session_id
                 )
                 print("is real normal")
                 judge_flag = False
@@ -139,7 +151,9 @@ async def ragchat(
                 response = normalChat(
                 memory =current_memory ,
                 question = question ,
-                openai_api_key = openai_api_key
+                openai_api_key = openai_api_key ,
+                db = sql ,
+                session_id = session_id
                 )
                 print("db and history success")
 
@@ -147,7 +161,9 @@ async def ragchat(
                 response = normalChat(
                 memory =current_memory ,
                 question = question ,
-                openai_api_key = openai_api_key
+                openai_api_key = openai_api_key ,
+                db = sql ,
+                session_id = session_id
                 )
                 print("db and normal success")
 
@@ -155,7 +171,9 @@ async def ragchat(
                 response = normalChat(
                 memory =current_memory ,
                 question = question ,
-                openai_api_key = openai_api_key
+                openai_api_key = openai_api_key ,
+                db = sql ,
+                session_id = session_id
                 )
                 print("db and normal success")
 
@@ -163,9 +181,30 @@ async def ragchat(
         response = normalChat(
         memory =current_memory ,
         question = question ,
-        openai_api_key = openai_api_key
+        openai_api_key = openai_api_key ,
+        db = sql ,
+        session_id = session_id
         )
-        print(memory_map)
-        print(db_map)
+        # print(memory_map)
+        # print(db_map)
     # 把结果返回给前端
+    return response
+
+@app.post("/chat/db")
+def createChat(body : DBCreate ,db = Depends(get_db)):
+    response = chatCreate(
+        db = db ,
+        content = body.content ,
+        role = body.role ,
+        session_id = body.session_id
+        )
+
+    return  response
+
+@app.get("/chat/get")
+def getHistoryChat(session_id :int,db = Depends(get_db)):
+    response = chatHistoryGet(
+        session_id = session_id ,
+        db = db
+    )
     return response
