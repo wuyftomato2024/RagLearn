@@ -3,7 +3,7 @@ from db_format import ChatMessages
 from fastapi import HTTPException
 from langchain_core.messages import AIMessage ,HumanMessage
 
-def chatCreate(db , session_id ,role , content):
+def chatCreate(sql_db , session_id ,role , content):
 
     newChat = ChatMessages(
         session_id = session_id ,
@@ -11,8 +11,8 @@ def chatCreate(db , session_id ,role , content):
         content = content
     )
 
-    db.add(newChat)
-    db.commit()
+    sql_db.add(newChat)
+    sql_db.commit()
 
     return DBResponse(
         status = "ok",
@@ -27,10 +27,10 @@ def chatCreate(db , session_id ,role , content):
 
     )
 
-def chatHistoryGet(db ,session_id):
+def chatHistoryGet(sql_db ,session_id):
     chatHistory_map = []
 
-    chatHistorys = db.query(ChatMessages).filter(ChatMessages.session_id == session_id).all()
+    chatHistorys = sql_db.query(ChatMessages).filter(ChatMessages.session_id == session_id).all()
 
     if chatHistorys is None:
         raise HTTPException(status_code= 400 ,detail="chatHistory is None")

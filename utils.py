@@ -32,7 +32,7 @@ def judge(question ,openai_api_key ,memory):
 # RagChat函数
 # *****
 # 因为fastapi用的是异步上传，所以这里要加上异步“async” 
-async def ragChat(question , memory ,upload_file ,openai_api_key ,top_k ,db):
+async def ragChat(question , memory ,upload_file ,openai_api_key ,top_k ,sql_db ,session_id):
     # 嵌入模型  把每个文本块转成向量（变成数字）
     embedding_model = OpenAIEmbeddings(openai_api_key = openai_api_key)
     # 定义模型
@@ -40,21 +40,30 @@ async def ragChat(question , memory ,upload_file ,openai_api_key ,top_k ,db):
     # 判断top_k的值，如果非法就报错
     if top_k < 1 or top_k > 3 :
         raise HTTPException(status_code=400 , detail="top_k must be between 1 and 3")
+    
+    vector_db_path = f"faiss_db/{session_id}/"
+    vector_db_flag = os.path.exists(vector_db_path)
 
     # 复数写法
     if upload_file :
 
         docs_list = await handle_upload_files(upload_file)
         # 文档向量化 ，存入数据库 放入(分割好的文件块和嵌入模型，把texts给变成数字)
-        db = FAISS.from_documents(docs_list,embedding_model)
+        vector_db = FAISS.from_documents(docs_list,embedding_model)
 
-    elif db is None :
-        raise HTTPException(status_code=400 , detail="please upload a txt or pdf file first")
-    
-    current_db = db
+        if vector_db_flag == False:
+            save_local_vector_db(session_id = session_id,vector_db =vector_db)
+        elif upload_file :
+            save_local_vector_db(session_id = session_id,vector_db =vector_db)
+            
+    else :
+        local_vector_db = load_local_vector_db(session_id = session_id ,embedding_model = embedding_model)
+        if not local_vector_db:
+            raise HTTPException(status_code=400 , detail="please upload a txt or pdf file first")
+        vector_db = local_vector_db
     
     # 把数据库变成一个“检索器”。后面的search_kwargs是固定写法，是搜索参数的意思，必须是要写成字典的形式
-    db_retriever = db.as_retriever(search_kwargs= {"k": top_k}) 
+    db_retriever = vector_db.as_retriever(search_kwargs= {"k": top_k}) 
     
     qa_prompt = build_qa_prompt(question)
     # 创建一个“带记忆 + 会检索2资料”的问答链。
@@ -81,6 +90,12 @@ async def ragChat(question , memory ,upload_file ,openai_api_key ,top_k ,db):
         else :
             result = response["answer"]
 
+    print(response["source_documents"])
+    print(len(response["source_documents"]))
+
+    chatCreate(sql_db =sql_db, session_id =session_id,role = "HumanMessage" , content = question)
+    chatCreate(sql_db =sql_db, session_id =session_id,role = "AIMessage" , content = response["answer"])
+
     chunk_hit = chunk_hit_llm(memory ,question ,response ,openai_api_key)
 
     history_list = chat_history(memory)
@@ -93,25 +108,25 @@ async def ragChat(question , memory ,upload_file ,openai_api_key ,top_k ,db):
             answer = result ,
             chatHistory = history_list ,
             tag = source_files)
-    ),current_db
+    )
    
 # *****
 # 普通Chat函数
 # *****
-def normalChat(question ,openai_api_key ,db ,session_id ,):
+def normalChat(question ,openai_api_key ,sql_db ,session_id ,):
     model = ChatOpenAI(model="gpt-3.5-turbo",openai_api_key =openai_api_key)
     message_list = []
 
-    sql_messages = chatHistoryGet(db = db ,session_id = session_id)
+    sql_messages = chatHistoryGet(sql_db = sql_db ,session_id = session_id)
 
     sql_messages.append(HumanMessage(content = question))
     
     response = model.invoke(sql_messages)
 
-    chatCreate(db = db,session_id =session_id,role = "HumanMessage",content = question)
-    chatCreate(db = db,session_id =session_id,role = "AIMessage",content = response.content)
+    chatCreate(sql_db = sql_db,session_id =session_id,role = "HumanMessage",content = question)
+    chatCreate(sql_db = sql_db,session_id =session_id,role = "AIMessage",content = response.content)
 
-    sql_message_2nd = chatHistoryGet(db = db ,session_id = session_id)
+    sql_message_2nd = chatHistoryGet(sql_db = sql_db ,session_id = session_id)
 
     for sql_message in sql_message_2nd:
         if isinstance(sql_message ,HumanMessage):
@@ -274,3 +289,22 @@ def summary_answer(openai_api_key ,response):
     summary_answer_response = model.invoke(message)
 
     return summary_answer_response.content
+
+# *****
+# 向量库保存到本地函数
+# *****
+def save_local_vector_db(session_id ,vector_db):
+    vector_db_path = f"faiss_db/{session_id}/"
+    vector_db.save_local(vector_db_path)
+
+# *****
+# 向量库读取本地函数
+# *****
+def load_local_vector_db(session_id ,embedding_model):
+    vector_db_path = f"faiss_db/{session_id}/"
+    # 因为保存到本地的向量库，不会把嵌入模型也保存到本地，所以读取的时候必须先把向量库给重新附加一次
+    vector_db = FAISS.load_local(vector_db_path ,embedding_model ,allow_dangerous_deserialization=True)
+    if vector_db is None :
+        raise HTTPException(status_code=400 ,detail="Not local db")
+
+    return vector_db

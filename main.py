@@ -6,7 +6,7 @@ from sqlService import chatCreate ,chatHistoryGet
 from model import ApiResponse
 from typing import List 
 from database import engine ,Base ,SessionLocal
-from db_model import DBCreate
+import os
 
 # 创建 FastAPI 应用
 app = FastAPI()
@@ -64,12 +64,16 @@ async def ragchat(
     upload_file : List [UploadFile] | None = File(None),
     top_k :int = Form(3,ge=1,le=3),
     session_id :int = Form(...) ,
-    sql = Depends(get_db)
+    sql_db = Depends(get_db)
 ):
-    if session_id not in db_map :
-        db = None
-        db_map[session_id] = db
-    current_db = db_map[session_id]
+    # if session_id not in db_map :
+    #     vector_db = None
+    #     db_map[session_id] = vector_db
+
+    # current_db = db_map[session_id]    
+
+    vector_db_path = f"faiss_db/{session_id}/"
+    vector_db_flag = os.path.exists(vector_db_path)
 
     if session_id not in memory_map :
         memory = ConversationBufferMemory(
@@ -82,33 +86,33 @@ async def ragchat(
 
     if upload_file :
         # 调用你已经写好的 utils 里面的函数
-        response ,update_db= await ragChat(
+        response = await ragChat(
             question = question,
             memory = current_memory,
             upload_file = upload_file,
             openai_api_key = openai_api_key,
             top_k = top_k ,
-            db = current_db
+            sql_db = sql_db ,
+            session_id = session_id
             )
-        db_map[session_id] = update_db
     
-    elif not upload_file and db_map[session_id] is not None :
+    elif not upload_file and vector_db_flag :
 
         judge_flag = True
 
         rag_kws = ["文件","文档","pdf","上传","总结","概括"]
         for rag_kw in rag_kws :
             if rag_kw in question :
-                response ,update_db= await ragChat(
+                response = await ragChat(
                 question = question,
                 memory = current_memory,
                 upload_file = upload_file,
                 openai_api_key = openai_api_key,
                 top_k = top_k ,
-                db = current_db
+                sql_db = sql_db ,
+                session_id = session_id
                 )
                 print("is real rag")
-                db_map[session_id] = update_db
                 judge_flag = False
                 break
             
@@ -116,10 +120,10 @@ async def ragchat(
         for history_kw in history_kws :
             if history_kw in question :
                 response = normalChat(
-                memory =current_memory ,
+                # memory =current_memory ,
                 question = question ,
                 openai_api_key = openai_api_key ,
-                db = sql ,
+                sql_db = sql_db ,
                 session_id = session_id
                 )
                 print("is real normal")
@@ -135,54 +139,50 @@ async def ragchat(
             ).strip().lower()
 
             if judge_response == "rag" :
-                response , update_db = await ragChat(
+                response = await ragChat(
                 question = question,
                 memory = current_memory,
                 upload_file = upload_file,
                 openai_api_key = openai_api_key,
                 top_k = top_k ,
-                db = current_db
+                sql_db = sql_db ,
+                session_id = session_id
                 )
-                db_map[session_id] = update_db
 
                 print("db and rag success")
 
             elif judge_response == "history":
                 response = normalChat(
-                memory =current_memory ,
                 question = question ,
                 openai_api_key = openai_api_key ,
-                db = sql ,
+                sql_db = sql_db ,
                 session_id = session_id
                 )
                 print("db and history success")
 
             elif judge_response == "normal":
                 response = normalChat(
-                memory =current_memory ,
                 question = question ,
                 openai_api_key = openai_api_key ,
-                db = sql ,
+                sql_db = sql_db ,
                 session_id = session_id
                 )
                 print("db and normal success")
 
             else :
                 response = normalChat(
-                memory =current_memory ,
                 question = question ,
                 openai_api_key = openai_api_key ,
-                db = sql ,
+                sql_db = sql_db ,
                 session_id = session_id
                 )
                 print("db and normal success")
 
     else :
         response = normalChat(
-        memory =current_memory ,
         question = question ,
         openai_api_key = openai_api_key ,
-        db = sql ,
+        sql_db = sql_db ,
         session_id = session_id
         )
         # print(memory_map)
@@ -190,21 +190,21 @@ async def ragchat(
     # 把结果返回给前端
     return response
 
-@app.post("/chat/db")
-def createChat(body : DBCreate ,db = Depends(get_db)):
-    response = chatCreate(
-        db = db ,
-        content = body.content ,
-        role = body.role ,
-        session_id = body.session_id
-        )
+# @app.post("/chat/db")
+# def createChat(body : DBCreate ,db = Depends(get_db)):
+#     response = chatCreate(
+#         db = db ,
+#         content = body.content ,
+#         role = body.role ,
+#         session_id = body.session_id
+#         )
 
-    return  response
+#     return  response
 
-@app.get("/chat/get")
-def getHistoryChat(session_id :int,db = Depends(get_db)):
-    response = chatHistoryGet(
-        session_id = session_id ,
-        db = db
-    )
-    return response
+# @app.get("/chat/get")
+# def getHistoryChat(session_id :int,db = Depends(get_db)):
+#     response = chatHistoryGet(
+#         session_id = session_id ,
+#         db = db
+#     )
+#     return response
