@@ -1,8 +1,8 @@
 from fastapi import FastAPI, UploadFile, File, Form ,HTTPException ,Depends
 from fastapi.responses import JSONResponse
 from langchain.memory import ConversationBufferMemory
-from utils import ragChat ,normalChat ,judge 
-from sqlService import chatCreate ,chatHistoryGet
+from utils import ragChat ,normalChat ,judge ,delete_vector_db
+from sqlService import chatDelete
 from model import ApiResponse
 from typing import List 
 from database import engine ,Base ,SessionLocal
@@ -66,11 +66,6 @@ async def ragchat(
     session_id :int = Form(...) ,
     sql_db = Depends(get_db)
 ):
-    # if session_id not in db_map :
-    #     vector_db = None
-    #     db_map[session_id] = vector_db
-
-    # current_db = db_map[session_id]    
 
     vector_db_path = f"faiss_db/{session_id}/"
     vector_db_flag = os.path.exists(vector_db_path)
@@ -112,7 +107,7 @@ async def ragchat(
                 sql_db = sql_db ,
                 session_id = session_id
                 )
-                print("is real rag")
+                print("not in judge and rag")
                 judge_flag = False
                 break
             
@@ -120,13 +115,12 @@ async def ragchat(
         for history_kw in history_kws :
             if history_kw in question :
                 response = normalChat(
-                # memory =current_memory ,
                 question = question ,
                 openai_api_key = openai_api_key ,
                 sql_db = sql_db ,
                 session_id = session_id
                 )
-                print("is real normal")
+                print("not in judge and normal")
                 judge_flag = False
                 break
 
@@ -135,7 +129,8 @@ async def ragchat(
             judge_response = judge(
                 question = question,
                 openai_api_key = openai_api_key ,
-                memory = current_memory
+                sql_db = sql_db ,
+                session_id = session_id
             ).strip().lower()
 
             if judge_response == "rag" :
@@ -149,7 +144,7 @@ async def ragchat(
                 session_id = session_id
                 )
 
-                print("db and rag success")
+                print("judge rag success")
 
             elif judge_response == "history":
                 response = normalChat(
@@ -158,7 +153,7 @@ async def ragchat(
                 sql_db = sql_db ,
                 session_id = session_id
                 )
-                print("db and history success")
+                print("judge history success")
 
             elif judge_response == "normal":
                 response = normalChat(
@@ -167,7 +162,7 @@ async def ragchat(
                 sql_db = sql_db ,
                 session_id = session_id
                 )
-                print("db and normal success")
+                print("judge normal success")
 
             else :
                 response = normalChat(
@@ -176,7 +171,7 @@ async def ragchat(
                 sql_db = sql_db ,
                 session_id = session_id
                 )
-                print("db and normal success")
+                print("judge normal success")
 
     else :
         response = normalChat(
@@ -189,6 +184,16 @@ async def ragchat(
         # print(db_map)
     # 把结果返回给前端
     return response
+
+# *****
+# session删除
+# *****
+@app.delete("/chat/db")
+def sessionDelete(session_id :int ,sql_db = Depends(get_db)):
+    delete_vector_db(session_id = session_id)
+    chatDelete(sql_db = sql_db ,session_id = session_id)
+
+    return {"deleted":True}
 
 # @app.post("/chat/db")
 # def createChat(body : DBCreate ,db = Depends(get_db)):

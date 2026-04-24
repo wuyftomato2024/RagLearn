@@ -196,3 +196,18 @@ def summary_answer_prompt():
         ])
     
     return prompt
+
+def simple_normalChat():
+    simple_system_message = """Please answer concisely and clearly.
+                                Only answer the main point.
+                                Do not give too many examples.
+                                If the answer is not clearly stated in the provided context, do not make up information.
+                                Instead, say that the context does not clearly mention it."""    
+    return simple_system_message
+
+def defult_normalChat():
+    normal_system_message = """ 清楚回答问题
+                            可适当说明
+                            没有资料就明确说没有
+                            不要编造"""
+    return normal_system_message

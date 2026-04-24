@@ -4,21 +4,22 @@ from langchain_community.document_loaders import TextLoader , PyPDFLoader
 from langchain_community.vectorstores import FAISS
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain.chains import ConversationalRetrievalChain
-from langchain_core.messages import AIMessage ,HumanMessage
+from langchain_core.messages import AIMessage ,HumanMessage ,SystemMessage
 from fastapi import HTTPException
 from model import ChatResponse ,HistoryItem ,ApiResponse
-from prompts import judge_prompt ,chunk_hit_prompt ,summary_prompt ,summary_answer_prompt ,build_qa_prompt
+from prompts import judge_prompt ,chunk_hit_prompt ,summary_prompt ,summary_answer_prompt ,build_qa_prompt ,defult_normalChat ,simple_normalChat
 from sqlService import chatCreate ,chatHistoryGet
 import os
+import shutil
 
 # *****
 # 判断chat模式函数
 # *****
-def judge(question ,openai_api_key ,memory):
+def judge(question ,openai_api_key ,sql_db ,session_id):
     model = ChatOpenAI(model="gpt-3.5-turbo",openai_api_key=openai_api_key)
     prompt = judge_prompt()
     
-    history_list = chat_history(memory)
+    history_list = chatHistoryGet(sql_db = sql_db,session_id = session_id)
     # -4：的意思是，从最后四行开始，到最后 ：的意思是，冒号的左边是从哪里开始，右边是从哪里结束
     result_history = history_list[-4:]
 
@@ -41,20 +42,12 @@ async def ragChat(question , memory ,upload_file ,openai_api_key ,top_k ,sql_db 
     if top_k < 1 or top_k > 3 :
         raise HTTPException(status_code=400 , detail="top_k must be between 1 and 3")
     
-    vector_db_path = f"faiss_db/{session_id}/"
-    vector_db_flag = os.path.exists(vector_db_path)
-
     # 复数写法
     if upload_file :
-
         docs_list = await handle_upload_files(upload_file)
         # 文档向量化 ，存入数据库 放入(分割好的文件块和嵌入模型，把texts给变成数字)
         vector_db = FAISS.from_documents(docs_list,embedding_model)
-
-        if vector_db_flag == False:
-            save_local_vector_db(session_id = session_id,vector_db =vector_db)
-        elif upload_file :
-            save_local_vector_db(session_id = session_id,vector_db =vector_db)
+        save_local_vector_db(session_id = session_id,vector_db =vector_db)       
             
     else :
         local_vector_db = load_local_vector_db(session_id = session_id ,embedding_model = embedding_model)
@@ -77,6 +70,8 @@ async def ragChat(question , memory ,upload_file ,openai_api_key ,top_k ,sql_db 
     # 调用qa这个问答链，invoke（）里面需要传值的东西，是固定的，不用凭空出现，如果不知道需要用print确认 
     response = qa.invoke({"question" : question})
 
+    result = response["answer"]
+
     # rag内容分支判断（判断这个问题，是否归为总结类）
     summary_kws = ["总结","概括","主要内容","大意","讲了什么"]
 
@@ -84,21 +79,16 @@ async def ragChat(question , memory ,upload_file ,openai_api_key ,top_k ,sql_db 
         if summary_kw in question :
             summary_response = summary(question ,openai_api_key)
             if summary_response == "True" :
-                print("summer success")
+                print("summary success")
                 summary_answer_response = summary_answer(openai_api_key ,response)
-                result = summary_answer_response               
-        else :
-            result = response["answer"]
-
-    print(response["source_documents"])
-    print(len(response["source_documents"]))
+                result = summary_answer_response
 
     chatCreate(sql_db =sql_db, session_id =session_id,role = "HumanMessage" , content = question)
-    chatCreate(sql_db =sql_db, session_id =session_id,role = "AIMessage" , content = response["answer"])
+    chatCreate(sql_db =sql_db, session_id =session_id,role = "AIMessage" , content = result)
 
-    chunk_hit = chunk_hit_llm(memory ,question ,response ,openai_api_key)
+    chunk_hit = chunk_hit_llm(question ,response ,openai_api_key,sql_db ,session_id)
 
-    history_list = chat_history(memory)
+    history_list = chatHistoryGet(sql_db = sql_db,session_id = session_id)
     
     source_files = [chunk_hit]
     
@@ -115,16 +105,28 @@ async def ragChat(question , memory ,upload_file ,openai_api_key ,top_k ,sql_db 
 # *****
 def normalChat(question ,openai_api_key ,sql_db ,session_id ,):
     model = ChatOpenAI(model="gpt-3.5-turbo",openai_api_key =openai_api_key)
-    message_list = []
+
+    simple_words = ["简单","简洁","简短","少废话","易懂","少例子"]
+    is_simple_mode = False
+    for kw in simple_words:
+        if kw in question :
+            is_simple_mode = True
+            break
+    if is_simple_mode is True :
+        qa_prompt = simple_normalChat()
+
+    else:
+        qa_prompt = defult_normalChat()
 
     sql_messages = chatHistoryGet(sql_db = sql_db ,session_id = session_id)
-
-    sql_messages.append(HumanMessage(content = question))
-    
-    response = model.invoke(sql_messages)
+    messages = [SystemMessage(content = qa_prompt)] + sql_messages + [HumanMessage(content = question)]
+   
+    response = model.invoke(messages)
 
     chatCreate(sql_db = sql_db,session_id =session_id,role = "HumanMessage",content = question)
     chatCreate(sql_db = sql_db,session_id =session_id,role = "AIMessage",content = response.content)
+
+    message_list = []
 
     sql_message_2nd = chatHistoryGet(sql_db = sql_db ,session_id = session_id)
 
@@ -193,32 +195,10 @@ async def handle_upload_files(upload_file):
     return docs_list
 
 # *****
-# 整理history
-# *****
-def chat_history(memory):
-    # 先创建history列表的空值
-    history_list = []
-    # for循环
-    for msg in memory.chat_memory.messages :
-        # isinstance()为判断的用法，判断（a等于b）
-        if isinstance(msg,HumanMessage):
-            # 如果a等于b的话就往history_list里面添加以下字典
-            history_list.append(HistoryItem(role = "human",content = msg.content))
-        elif isinstance(msg,AIMessage):
-            history_list.append(HistoryItem(role = "ai" , content = msg.content))
-    
-    return history_list
-
-# *****
 # 整理 回答的问题，整理成一个大文件块
 # *****
 def chunk_hit(response):
-
-    ai_text_map = []
-
-    for doc in response["source_documents"]:
-        ai_text = f"filename : {doc.metadata['file_name']} \n file_content :{doc.page_content}"
-        ai_text_map.append(ai_text)
+    ai_text_map = [f"filename : {doc.metadata['file_name']} \n file_content :{doc.page_content}" for doc in response["source_documents"] ]
 
     ai_text_all = "\n".join(ai_text_map)
 
@@ -227,13 +207,13 @@ def chunk_hit(response):
 # *****
 # 命中文件来源llm
 # *****
-def chunk_hit_llm(memory ,question ,response ,openai_api_key):
+def chunk_hit_llm(question ,response ,openai_api_key ,sql_db ,session_id):
     ai_text_all = chunk_hit(response)
 
     model = ChatOpenAI(model="gpt-3.5-turbo",openai_api_key=openai_api_key)
     prompt = chunk_hit_prompt()
     
-    history_list = chat_history(memory)
+    history_list = chatHistoryGet(sql_db = sql_db,session_id = session_id)
 
     result_history = history_list[-4:]
 
@@ -265,10 +245,8 @@ def summary(question ,openai_api_key):
 # 提取response结果
 # *****
 def summary_texts(response):
-    summary_text_map = []
-    for doc in  response["source_documents"]:
-        answer = doc.page_content
-        summary_text_map.append(answer)
+
+    summary_text_map = [doc.page_content for doc in response["source_documents"]]
 
     summary_text = "\n".join(summary_text_map)
 
@@ -308,3 +286,11 @@ def load_local_vector_db(session_id ,embedding_model):
         raise HTTPException(status_code=400 ,detail="Not local db")
 
     return vector_db
+
+def delete_vector_db(session_id) :
+    vector_db_path = f"faiss_db/{session_id}/"
+    vector_db_flag = os.path.exists(vector_db_path)
+    if vector_db_flag == False:
+        raise HTTPException(status_code=404 ,detail="the file is not")
+    shutil.rmtree(vector_db_path)
+

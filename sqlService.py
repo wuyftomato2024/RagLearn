@@ -42,6 +42,27 @@ def chatHistoryGet(sql_db ,session_id):
             chatHistory_map.append(AIMessage(content = chatHistory.content))
 
     return chatHistory_map
+
+def chatDelete(sql_db ,session_id):
+    chatHistorys = sql_db.query(ChatMessages).filter(ChatMessages.session_id == session_id).all()
+
+    if not chatHistorys :
+        raise HTTPException(status_code=404 ,detail="chatMessage in None")
+
+    for chatHistory in chatHistorys :
+        sql_db.delete(chatHistory)
+    sql_db.commit()
+
+    return DBResponse(
+        status = "ok",
+        data={
+            "Deleted":True ,
+            "data":{
+                None
+            }
+        }
+
+    )
   
 
 def chatMessages(user):
