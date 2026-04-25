@@ -1,7 +1,7 @@
 from fastapi import FastAPI, UploadFile, File, Form ,HTTPException ,Depends
 from fastapi.responses import JSONResponse
 from langchain.memory import ConversationBufferMemory
-from utils import ragChat ,normalChat ,judge ,delete_vector_db
+from utils import ragChat ,normalChat ,judge ,delete_vector_db ,ollamaNormalChat ,ollamaRagChat
 from sqlService import chatDelete
 from model import ApiResponse
 from typing import List 
@@ -213,3 +213,44 @@ def sessionDelete(session_id :int ,sql_db = Depends(get_db)):
 #         db = db
 #     )
 #     return response
+
+@app.post("/ollama/chat")
+def ollamaChat(# Form为表单里接收普通数据，File为表单里接收普通数据
+    question : str = Form(...),
+    session_id :int = Form(...) ,
+    sql_db = Depends(get_db)):
+    response = ollamaNormalChat(
+        question = question ,
+        sql_db = sql_db ,
+        session_id = session_id
+    )
+
+    return response
+
+@app.post("/ollama/ragchat")
+async def ollamaragChat(
+    question : str = Form(...),
+    upload_file : List [UploadFile] | None = File(None),
+    top_k :int = Form(3,ge=1,le=3),
+    session_id :int = Form(...) ,
+    sql_db = Depends(get_db)
+):
+    if session_id not in memory_map :
+        memory = ConversationBufferMemory(
+            memory_key= "chat_history",
+            return_messages=True ,
+            output_key="answer"
+            )
+        memory_map[session_id] = memory
+    current_memory = memory_map[session_id]
+
+    response = await ollamaRagChat(
+        question = question,
+        memory = current_memory,
+        upload_file = upload_file,
+        top_k = top_k ,
+        sql_db = sql_db ,
+        session_id = session_id
+    )
+
+    return response

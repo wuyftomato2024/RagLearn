@@ -11,6 +11,8 @@ from prompts import judge_prompt ,chunk_hit_prompt ,summary_prompt ,summary_answ
 from sqlService import chatCreate ,chatHistoryGet
 import os
 import shutil
+from langchain_community.chat_models import ChatOllama
+from langchain_community.embeddings import OllamaEmbeddings
 
 # *****
 # 判断chat模式函数
@@ -88,7 +90,7 @@ async def ragChat(question , memory ,upload_file ,openai_api_key ,top_k ,sql_db 
 
     chunk_hit = chunk_hit_llm(question ,response ,openai_api_key,sql_db ,session_id)
 
-    history_list = chatHistoryGet(sql_db = sql_db,session_id = session_id)
+    message_list = sql_message_process(sql_db =sql_db, session_id =session_id)
     
     source_files = [chunk_hit]
     
@@ -96,14 +98,14 @@ async def ragChat(question , memory ,upload_file ,openai_api_key ,top_k ,sql_db 
         status = "ok",
         data = ChatResponse(
             answer = result ,
-            chatHistory = history_list ,
+            chatHistory = message_list ,
             tag = source_files)
     )
    
 # *****
 # 普通Chat函数
 # *****
-def normalChat(question ,openai_api_key ,sql_db ,session_id ,):
+def normalChat(question ,openai_api_key ,sql_db ,session_id ):
     model = ChatOpenAI(model="gpt-3.5-turbo",openai_api_key =openai_api_key)
 
     simple_words = ["简单","简洁","简短","少废话","易懂","少例子"]
@@ -126,15 +128,7 @@ def normalChat(question ,openai_api_key ,sql_db ,session_id ,):
     chatCreate(sql_db = sql_db,session_id =session_id,role = "HumanMessage",content = question)
     chatCreate(sql_db = sql_db,session_id =session_id,role = "AIMessage",content = response.content)
 
-    message_list = []
-
-    sql_message_2nd = chatHistoryGet(sql_db = sql_db ,session_id = session_id)
-
-    for sql_message in sql_message_2nd:
-        if isinstance(sql_message ,HumanMessage):
-            message_list.append(HistoryItem(role = "human",content = sql_message.content))
-        if isinstance(sql_message ,AIMessage):
-            message_list.append(HistoryItem(role = "ai",content = sql_message.content))
+    message_list = sql_message_process(sql_db =sql_db, session_id =session_id)
 
     return ApiResponse(
         status = "ok",
@@ -142,6 +136,102 @@ def normalChat(question ,openai_api_key ,sql_db ,session_id ,):
             answer = response.content ,
             chatHistory = message_list ,
             tag = [])
+    )
+
+# *****
+# 本地模型 普通Chat函数
+# *****
+def ollamaNormalChat(question ,sql_db ,session_id ):
+    model = ChatOllama(model="deepseek-r1:14b")
+
+    simple_words = ["简单","简洁","简短","少废话","易懂","少例子"]
+    is_simple_mode = False
+    for kw in simple_words:
+        if kw in question :
+            is_simple_mode = True
+            break
+    if is_simple_mode is True :
+        qa_prompt = simple_normalChat()
+
+    else:
+        qa_prompt = defult_normalChat()
+
+    sql_messages = chatHistoryGet(sql_db = sql_db ,session_id = session_id)
+    messages = [SystemMessage(content = qa_prompt)] + sql_messages + [HumanMessage(content = question)]
+   
+    response = model.invoke(messages)
+
+    chatCreate(sql_db = sql_db,session_id =session_id,role = "HumanMessage",content = question)
+    chatCreate(sql_db = sql_db,session_id =session_id,role = "AIMessage",content = response.content)
+
+    message_list = sql_message_process(sql_db =sql_db, session_id =session_id)
+
+    return ApiResponse(
+        status = "ok",
+        data = ChatResponse(
+            answer = response.content ,
+            chatHistory = message_list ,
+            tag = [])
+    )
+
+# *****
+# RagChat函数 本地模型+本地嵌入模型
+# *****
+# 因为fastapi用的是异步上传，所以这里要加上异步“async” 
+async def ollamaRagChat(question , memory ,upload_file ,top_k ,sql_db ,session_id):
+    # 嵌入模型  把每个文本块转成向量（变成数字）
+    embedding_model = OllamaEmbeddings(model="bge-large")
+    # 定义模型
+    model = ChatOllama(model="deepseek-r1:14b")
+    # 判断top_k的值，如果非法就报错
+    if top_k < 1 or top_k > 3 :
+        raise HTTPException(status_code=400 , detail="top_k must be between 1 and 3")
+    
+    # 复数写法
+    if upload_file :
+        docs_list = await handle_upload_files(upload_file)
+        # 文档向量化 ，存入数据库 放入(分割好的文件块和嵌入模型，把texts给变成数字)
+        vector_db = FAISS.from_documents(docs_list,embedding_model)
+        save_local_vector_db(session_id = session_id,vector_db =vector_db)       
+            
+    else :
+        local_vector_db = load_local_vector_db(session_id = session_id ,embedding_model = embedding_model)
+        if not local_vector_db:
+            raise HTTPException(status_code=400 , detail="please upload a txt or pdf file first")
+        vector_db = local_vector_db
+    
+    # 把数据库变成一个“检索器”。后面的search_kwargs是固定写法，是搜索参数的意思，必须是要写成字典的形式
+    db_retriever = vector_db.as_retriever(search_kwargs= {"k": top_k}) 
+    
+    qa_prompt = build_qa_prompt(question)
+    # 创建一个“带记忆 + 会检索2资料”的问答链。
+    qa = ConversationalRetrievalChain.from_llm(
+        llm = model ,
+        retriever = db_retriever,
+        memory = memory ,
+        return_source_documents = True ,
+        combine_docs_chain_kwargs = {"prompt":qa_prompt}
+    )
+    # 调用qa这个问答链，invoke（）里面需要传值的东西，是固定的，不用凭空出现，如果不知道需要用print确认 
+    response = qa.invoke({"question" : question})
+
+    result = response["answer"]
+
+    chatCreate(sql_db =sql_db, session_id =session_id,role = "HumanMessage" , content = question)
+    chatCreate(sql_db =sql_db, session_id =session_id,role = "AIMessage" , content = result)
+
+    # chunk_hit = chunk_hit_llm(question ,response ,openai_api_key,sql_db ,session_id)
+
+    message_list = sql_message_process(sql_db =sql_db, session_id =session_id)
+    
+    source_files = []
+    
+    return ApiResponse(
+        status = "ok",
+        data = ChatResponse(
+            answer = result ,
+            chatHistory = message_list ,
+            tag = source_files)
     )
 
 # *****
@@ -287,6 +377,9 @@ def load_local_vector_db(session_id ,embedding_model):
 
     return vector_db
 
+# *****
+# 按照session删除内容
+# *****
 def delete_vector_db(session_id) :
     vector_db_path = f"faiss_db/{session_id}/"
     vector_db_flag = os.path.exists(vector_db_path)
@@ -294,3 +387,18 @@ def delete_vector_db(session_id) :
         raise HTTPException(status_code=404 ,detail="the file is not")
     shutil.rmtree(vector_db_path)
 
+# *****
+# 前端输出转换
+# *****    
+def sql_message_process(sql_db ,session_id):
+    sql_messages = chatHistoryGet(sql_db = sql_db,session_id = session_id)
+
+    message_list = []
+
+    for sql_message in sql_messages:
+        if isinstance(sql_message ,HumanMessage):
+            message_list.append(HistoryItem(role = "human",content = sql_message.content))
+        if isinstance(sql_message ,AIMessage):
+            message_list.append(HistoryItem(role = "ai",content = sql_message.content))
+
+    return message_list
