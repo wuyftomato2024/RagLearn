@@ -108,17 +108,7 @@ async def ragChat(question , memory ,upload_file ,openai_api_key ,top_k ,sql_db 
 def normalChat(question ,openai_api_key ,sql_db ,session_id ):
     model = ChatOpenAI(model="gpt-3.5-turbo",openai_api_key =openai_api_key)
 
-    simple_words = ["简单","简洁","简短","少废话","易懂","少例子"]
-    is_simple_mode = False
-    for kw in simple_words:
-        if kw in question :
-            is_simple_mode = True
-            break
-    if is_simple_mode is True :
-        qa_prompt = simple_normalChat()
-
-    else:
-        qa_prompt = defult_normalChat()
+    qa_prompt = answer_model(question)
 
     sql_messages = chatHistoryGet(sql_db = sql_db ,session_id = session_id)
     messages = [SystemMessage(content = qa_prompt)] + sql_messages + [HumanMessage(content = question)]
@@ -139,22 +129,13 @@ def normalChat(question ,openai_api_key ,sql_db ,session_id ):
     )
 
 # *****
+# 本地环境
 # 本地模型 普通Chat函数
 # *****
 def ollamaNormalChat(question ,sql_db ,session_id ):
     model = ChatOllama(model="deepseek-r1:14b")
 
-    simple_words = ["简单","简洁","简短","少废话","易懂","少例子"]
-    is_simple_mode = False
-    for kw in simple_words:
-        if kw in question :
-            is_simple_mode = True
-            break
-    if is_simple_mode is True :
-        qa_prompt = simple_normalChat()
-
-    else:
-        qa_prompt = defult_normalChat()
+    qa_prompt = answer_model(question)
 
     sql_messages = chatHistoryGet(sql_db = sql_db ,session_id = session_id)
     messages = [SystemMessage(content = qa_prompt)] + sql_messages + [HumanMessage(content = question)]
@@ -175,9 +156,9 @@ def ollamaNormalChat(question ,sql_db ,session_id ):
     )
 
 # *****
+# 本地环境
 # RagChat函数 本地模型+本地嵌入模型
 # *****
-# 因为fastapi用的是异步上传，所以这里要加上异步“async” 
 async def ollamaRagChat(question , memory ,upload_file ,top_k ,sql_db ,session_id):
     # 嵌入模型  把每个文本块转成向量（变成数字）
     embedding_model = OllamaEmbeddings(model="bge-large")
@@ -235,6 +216,69 @@ async def ollamaRagChat(question , memory ,upload_file ,top_k ,sql_db ,session_i
     )
 
 # *****
+# 本地环境 ，手动化测试用
+# RagChat函数 本地模型+本地嵌入模型 
+# *****
+async def manualRagChat(question , memory ,upload_file ,top_k ,sql_db ,session_id):
+    # 嵌入模型  把每个文本块转成向量（变成数字）
+    embedding_model = OllamaEmbeddings(model="bge-large")
+    # 定义模型
+    model = ChatOllama(model="deepseek-r1:14b")
+    # 判断top_k的值，如果非法就报错
+    if top_k < 1 or top_k > 3 :
+        raise HTTPException(status_code=400 , detail="top_k must be between 1 and 3")
+    
+    # 复数写法
+    if upload_file :
+        docs_list = await handle_upload_files(upload_file)
+        # 文档向量化 ，存入数据库 放入(分割好的文件块和嵌入模型，把texts给变成数字)
+        vector_db = FAISS.from_documents(docs_list,embedding_model)
+        save_local_vector_db(session_id = session_id,vector_db =vector_db)       
+            
+    else :
+        local_vector_db = load_local_vector_db(session_id = session_id ,embedding_model = embedding_model)
+        if not local_vector_db:
+            raise HTTPException(status_code=400 , detail="please upload a txt or pdf file first")
+        vector_db = local_vector_db
+    
+    # 把数据库变成一个“检索器”。后面的search_kwargs是固定写法，是搜索参数的意思，必须是要写成字典的形式
+    db_retriever = vector_db.as_retriever(search_kwargs= {"k": top_k}) 
+
+    sql_messages = chatHistoryGet(sql_db = sql_db ,session_id = session_id)
+
+    # chunk context定义
+    chunk_texts = db_retriever.invoke(question)
+    chunk_map = [chunk_text.page_content for chunk_text in chunk_texts ]
+    chunk_content_text =  "\n".join(chunk_map)
+
+    human_text = f"Context:\n{chunk_content_text}\n\nQuestion:\n{question}"
+
+    qa_prompt = answer_model(question)
+
+    message = [SystemMessage(content = qa_prompt)] + sql_messages + [HumanMessage(content =human_text)]
+
+    response = model.invoke(message)
+
+    # print(response)
+
+    chatCreate(sql_db =sql_db, session_id =session_id,role = "HumanMessage" , content = question)
+    chatCreate(sql_db =sql_db, session_id =session_id,role = "AIMessage" , content = response.content)
+
+    chunk_hit = chunk_hit_llm(question ,chunk_texts ,sql_db ,session_id)
+
+    message_list = sql_message_process(sql_db =sql_db, session_id =session_id)
+    
+    source_files = [chunk_hit]
+    
+    return ApiResponse(
+        status = "ok",
+        data = ChatResponse(
+            answer = response.content ,
+            chatHistory = message_list ,
+            tag = source_files)
+    )
+
+# *****
 # 上传文件函数
 # *****
 async def handle_upload_files(upload_file):
@@ -287,8 +331,8 @@ async def handle_upload_files(upload_file):
 # *****
 # 整理 回答的问题，整理成一个大文件块
 # *****
-def chunk_hit(response):
-    ai_text_map = [f"filename : {doc.metadata['file_name']} \n file_content :{doc.page_content}" for doc in response["source_documents"] ]
+def chunk_hit(chunk_texts):
+    ai_text_map = [f"filename : {doc.metadata['file_name']} \n file_content :{doc.page_content}" for doc in chunk_texts]
 
     ai_text_all = "\n".join(ai_text_map)
 
@@ -297,10 +341,11 @@ def chunk_hit(response):
 # *****
 # 命中文件来源llm
 # *****
-def chunk_hit_llm(question ,response ,openai_api_key ,sql_db ,session_id):
-    ai_text_all = chunk_hit(response)
+def chunk_hit_llm(question ,chunk_texts ,sql_db ,session_id):
+    ai_text_all = chunk_hit(chunk_texts)
 
-    model = ChatOpenAI(model="gpt-3.5-turbo",openai_api_key=openai_api_key)
+    # model = ChatOpenAI(model="gpt-3.5-turbo",openai_api_key=openai_api_key)
+    model = ChatOllama(model="deepseek-r1:14b")
     prompt = chunk_hit_prompt()
     
     history_list = chatHistoryGet(sql_db = sql_db,session_id = session_id)
@@ -402,3 +447,21 @@ def sql_message_process(sql_db ,session_id):
             message_list.append(HistoryItem(role = "ai",content = sql_message.content))
 
     return message_list
+
+# *****
+# 回复模型判断
+# *****  
+def answer_model(question):
+    simple_words = ["简单","简洁","简短","少废话","易懂","少例子"]
+    is_simple_mode = False
+    for kw in simple_words:
+        if kw in question :
+            is_simple_mode = True
+            break
+    if is_simple_mode is True :
+        qa_prompt = simple_normalChat()
+
+    else:
+        qa_prompt = defult_normalChat()
+
+    return qa_prompt 
