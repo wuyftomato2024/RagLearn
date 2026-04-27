@@ -14,3 +14,6 @@ main_demo.py
 deleted_code.txt
 faiss_db/
 test_file/
+local_model_utils.py
+frontend_design.md
+static/

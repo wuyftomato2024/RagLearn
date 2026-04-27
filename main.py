@@ -1,7 +1,7 @@
 from fastapi import FastAPI, UploadFile, File, Form ,HTTPException ,Depends
 from fastapi.responses import JSONResponse
-from langchain.memory import ConversationBufferMemory
-from utils import ragChat ,normalChat ,judge ,delete_vector_db ,ollamaNormalChat ,ollamaRagChat ,manualRagChat
+from fastapi.middleware.cors import CORSMiddleware
+from utils import ragChat ,normalChat ,judge ,delete_vector_db
 from sqlService import chatDelete
 from model import ApiResponse
 from typing import List 
@@ -10,6 +10,26 @@ import os
 
 # 创建 FastAPI 应用
 app = FastAPI()
+
+# ===== Codex added: frontend CORS support =====
+# This block was added by Codex for the static frontend.
+# Purpose:
+# - allow the frontend served from http://127.0.0.1:5500
+# - and http://localhost:5500
+#   to call this FastAPI backend during local development.
+# If you later host frontend and backend under the same origin,
+# this block can be removed or narrowed.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://127.0.0.1:5500",
+        "http://localhost:5500",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+# ===== End Codex added block =====
 
 Base.metadata.create_all(bind=engine)
 
@@ -59,36 +79,30 @@ async def error(request,exc :Exception):
 async def ragchat(
     # Form为表单里接收普通数据，File为表单里接收普通数据
     question : str = Form(...),
-    openai_api_key : str =Form(...),
+    openai_api_key: str | None  = Form(None),
     # 把上传文件变成一个List，以上传复数文件
     upload_file : List [UploadFile] | None = File(None),
     top_k :int = Form(3,ge=1,le=3),
     session_id :int = Form(...) ,
-    sql_db = Depends(get_db)
+    sql_db = Depends(get_db) ,
+    model_flag: str = Form("openai")
 ):
+    if model_flag == "openai" and not openai_api_key :
+        raise HTTPException(status_code=400 ,detail="you must input the apikey")
 
     vector_db_path = f"faiss_db/{session_id}/"
     vector_db_flag = os.path.exists(vector_db_path)
-
-    if session_id not in memory_map :
-        memory = ConversationBufferMemory(
-            memory_key= "chat_history",
-            return_messages=True ,
-            output_key="answer"
-            )
-        memory_map[session_id] = memory
-    current_memory = memory_map[session_id]
 
     if upload_file :
         # 调用你已经写好的 utils 里面的函数
         response = await ragChat(
             question = question,
-            memory = current_memory,
             upload_file = upload_file,
             openai_api_key = openai_api_key,
             top_k = top_k ,
             sql_db = sql_db ,
-            session_id = session_id
+            session_id = session_id ,
+            model_flag = model_flag
             )
     
     elif not upload_file and vector_db_flag :
@@ -100,12 +114,12 @@ async def ragchat(
             if rag_kw in question :
                 response = await ragChat(
                 question = question,
-                memory = current_memory,
                 upload_file = upload_file,
                 openai_api_key = openai_api_key,
                 top_k = top_k ,
                 sql_db = sql_db ,
-                session_id = session_id
+                session_id = session_id ,
+                model_flag = model_flag
                 )
                 print("not in judge and rag")
                 judge_flag = False
@@ -118,7 +132,8 @@ async def ragchat(
                 question = question ,
                 openai_api_key = openai_api_key ,
                 sql_db = sql_db ,
-                session_id = session_id
+                session_id = session_id ,
+                model_flag = model_flag
                 )
                 print("not in judge and normal")
                 judge_flag = False
@@ -130,18 +145,19 @@ async def ragchat(
                 question = question,
                 openai_api_key = openai_api_key ,
                 sql_db = sql_db ,
-                session_id = session_id
+                session_id = session_id ,
+                model_flag = model_flag
             ).strip().lower()
 
             if judge_response == "rag" :
                 response = await ragChat(
                 question = question,
-                memory = current_memory,
                 upload_file = upload_file,
                 openai_api_key = openai_api_key,
                 top_k = top_k ,
                 sql_db = sql_db ,
-                session_id = session_id
+                session_id = session_id ,
+                model_flag = model_flag
                 )
 
                 print("judge rag success")
@@ -151,7 +167,8 @@ async def ragchat(
                 question = question ,
                 openai_api_key = openai_api_key ,
                 sql_db = sql_db ,
-                session_id = session_id
+                session_id = session_id,
+                model_flag = model_flag
                 )
                 print("judge history success")
 
@@ -160,7 +177,8 @@ async def ragchat(
                 question = question ,
                 openai_api_key = openai_api_key ,
                 sql_db = sql_db ,
-                session_id = session_id
+                session_id = session_id,
+                model_flag = model_flag
                 )
                 print("judge normal success")
 
@@ -169,7 +187,8 @@ async def ragchat(
                 question = question ,
                 openai_api_key = openai_api_key ,
                 sql_db = sql_db ,
-                session_id = session_id
+                session_id = session_id ,
+                model_flag = model_flag
                 )
                 print("judge normal success")
 
@@ -178,7 +197,8 @@ async def ragchat(
         question = question ,
         openai_api_key = openai_api_key ,
         sql_db = sql_db ,
-        session_id = session_id
+        session_id = session_id ,
+        model_flag = model_flag
         )
         # print(memory_map)
         # print(db_map)
@@ -194,72 +214,3 @@ def sessionDelete(session_id :int ,sql_db = Depends(get_db)):
     chatDelete(sql_db = sql_db ,session_id = session_id)
 
     return {"deleted":True}
-
-@app.post("/ollama/chat")
-def ollamaChat(# Form为表单里接收普通数据，File为表单里接收普通数据
-    question : str = Form(...),
-    session_id :int = Form(...) ,
-    sql_db = Depends(get_db)):
-    response = ollamaNormalChat(
-        question = question ,
-        sql_db = sql_db ,
-        session_id = session_id
-    )
-
-    return response
-
-@app.post("/ollama/ragchat")
-async def ollamaragChat(
-    question : str = Form(...),
-    upload_file : List [UploadFile] | None = File(None),
-    top_k :int = Form(3,ge=1,le=3),
-    session_id :int = Form(...) ,
-    sql_db = Depends(get_db)
-):
-    if session_id not in memory_map :
-        memory = ConversationBufferMemory(
-            memory_key= "chat_history",
-            return_messages=True ,
-            output_key="answer"
-            )
-        memory_map[session_id] = memory
-    current_memory = memory_map[session_id]
-
-    response = await ollamaRagChat(
-        question = question,
-        memory = current_memory,
-        upload_file = upload_file,
-        top_k = top_k ,
-        sql_db = sql_db ,
-        session_id = session_id
-    )
-
-    return response
-
-@app.post("/manual/ragchat")
-async def ManualRagChat(
-    question : str = Form(...),
-    upload_file : List [UploadFile] | None = File(None),
-    top_k :int = Form(3,ge=1,le=3),
-    session_id :int = Form(...) ,
-    sql_db = Depends(get_db)
-):
-    if session_id not in memory_map :
-        memory = ConversationBufferMemory(
-            memory_key= "chat_history",
-            return_messages=True ,
-            output_key="answer"
-            )
-        memory_map[session_id] = memory
-    current_memory = memory_map[session_id]
-
-    response = await manualRagChat(
-        question = question,
-        memory = current_memory,
-        upload_file = upload_file,
-        top_k = top_k ,
-        sql_db = sql_db ,
-        session_id = session_id
-    )
-
-    return response

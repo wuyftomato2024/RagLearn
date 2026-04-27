@@ -3,11 +3,10 @@ from langchain_openai import OpenAIEmbeddings
 from langchain_community.document_loaders import TextLoader , PyPDFLoader
 from langchain_community.vectorstores import FAISS
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain.chains import ConversationalRetrievalChain
 from langchain_core.messages import AIMessage ,HumanMessage ,SystemMessage
 from fastapi import HTTPException
 from model import ChatResponse ,HistoryItem ,ApiResponse
-from prompts import judge_prompt ,chunk_hit_prompt ,summary_prompt ,summary_answer_prompt ,build_qa_prompt ,defult_normalChat ,simple_normalChat
+from prompts import judge_prompt ,chunk_hit_prompt ,summary_prompt ,summary_answer_prompt ,defult_normalChat ,simple_normalChat
 from sqlService import chatCreate ,chatHistoryGet
 import os
 import shutil
@@ -17,8 +16,9 @@ from langchain_community.embeddings import OllamaEmbeddings
 # *****
 # 判断chat模式函数
 # *****
-def judge(question ,openai_api_key ,sql_db ,session_id):
-    model = ChatOpenAI(model="gpt-3.5-turbo",openai_api_key=openai_api_key)
+def judge(question ,openai_api_key ,sql_db ,session_id ,model_flag):
+    ai_model ,_ =ai_model_select(model_flag ,openai_api_key)
+    model = ai_model
     prompt = judge_prompt()
     
     history_list = chatHistoryGet(sql_db = sql_db,session_id = session_id)
@@ -34,17 +34,21 @@ def judge(question ,openai_api_key ,sql_db ,session_id):
 # *****
 # RagChat函数
 # *****
-# 因为fastapi用的是异步上传，所以这里要加上异步“async” 
-async def ragChat(question , memory ,upload_file ,openai_api_key ,top_k ,sql_db ,session_id):
+async def ragChat(question , upload_file ,openai_api_key ,top_k ,sql_db ,session_id ,model_flag):
+    ai_model ,ai_embedding =ai_model_select(model_flag ,openai_api_key)
+
     # 嵌入模型  把每个文本块转成向量（变成数字）
-    embedding_model = OpenAIEmbeddings(openai_api_key = openai_api_key)
+    embedding_model = ai_embedding
+    # embedding_model = OllamaEmbeddings(model="bge-large")
+
     # 定义模型
-    model = ChatOpenAI(model="gpt-3.5-turbo",openai_api_key = openai_api_key)
+    model = ai_model
+    # model = ChatOllama(model="deepseek-r1:14b")
+
     # 判断top_k的值，如果非法就报错
     if top_k < 1 or top_k > 3 :
         raise HTTPException(status_code=400 , detail="top_k must be between 1 and 3")
     
-    # 复数写法
     if upload_file :
         docs_list = await handle_upload_files(upload_file)
         # 文档向量化 ，存入数据库 放入(分割好的文件块和嵌入模型，把texts给变成数字)
@@ -56,39 +60,36 @@ async def ragChat(question , memory ,upload_file ,openai_api_key ,top_k ,sql_db 
         if not local_vector_db:
             raise HTTPException(status_code=400 , detail="please upload a txt or pdf file first")
         vector_db = local_vector_db
-    
-    # 把数据库变成一个“检索器”。后面的search_kwargs是固定写法，是搜索参数的意思，必须是要写成字典的形式
-    db_retriever = vector_db.as_retriever(search_kwargs= {"k": top_k}) 
-    
-    qa_prompt = build_qa_prompt(question)
-    # 创建一个“带记忆 + 会检索2资料”的问答链。
-    qa = ConversationalRetrievalChain.from_llm(
-        llm = model ,
-        retriever = db_retriever,
-        memory = memory ,
-        return_source_documents = True ,
-        combine_docs_chain_kwargs = {"prompt":qa_prompt}
-    )
-    # 调用qa这个问答链，invoke（）里面需要传值的东西，是固定的，不用凭空出现，如果不知道需要用print确认 
-    response = qa.invoke({"question" : question})
 
-    result = response["answer"]
+    # 向量库检索
+    chunk_content_text ,chunk_texts= chunk_context(vector_db ,top_k ,question)
+    
+    qa_prompt = answer_model(question)
+
+    sql_messages = chatHistoryGet(sql_db = sql_db ,session_id = session_id)
+
+    human_text = f"Context:\n{chunk_content_text}\n\nQuestion:\n{question}"
+
+    message = [SystemMessage(content = qa_prompt)] + sql_messages + [HumanMessage(content =human_text)]
+
+    response = model.invoke(message)
+
+    result = response.content
 
     # rag内容分支判断（判断这个问题，是否归为总结类）
     summary_kws = ["总结","概括","主要内容","大意","讲了什么"]
-
     for summary_kw in summary_kws:
         if summary_kw in question :
-            summary_response = summary(question ,openai_api_key)
+            summary_response = summary(question ,openai_api_key ,model_flag)
             if summary_response == "True" :
                 print("summary success")
-                summary_answer_response = summary_answer(openai_api_key ,response)
+                summary_answer_response = summary_answer(openai_api_key ,vector_db ,top_k ,question ,model_flag)
                 result = summary_answer_response
 
     chatCreate(sql_db =sql_db, session_id =session_id,role = "HumanMessage" , content = question)
     chatCreate(sql_db =sql_db, session_id =session_id,role = "AIMessage" , content = result)
 
-    chunk_hit = chunk_hit_llm(question ,response ,openai_api_key,sql_db ,session_id)
+    chunk_hit = chunk_hit_llm(question ,chunk_texts ,sql_db ,session_id ,openai_api_key ,model_flag)
 
     message_list = sql_message_process(sql_db =sql_db, session_id =session_id)
     
@@ -105,8 +106,9 @@ async def ragChat(question , memory ,upload_file ,openai_api_key ,top_k ,sql_db 
 # *****
 # 普通Chat函数
 # *****
-def normalChat(question ,openai_api_key ,sql_db ,session_id ):
-    model = ChatOpenAI(model="gpt-3.5-turbo",openai_api_key =openai_api_key)
+def normalChat(question ,openai_api_key ,sql_db ,session_id ,model_flag):
+    ai_model ,_ =ai_model_select(model_flag ,openai_api_key)
+    model = ai_model
 
     qa_prompt = answer_model(question)
 
@@ -126,156 +128,6 @@ def normalChat(question ,openai_api_key ,sql_db ,session_id ):
             answer = response.content ,
             chatHistory = message_list ,
             tag = [])
-    )
-
-# *****
-# 本地环境
-# 本地模型 普通Chat函数
-# *****
-def ollamaNormalChat(question ,sql_db ,session_id ):
-    model = ChatOllama(model="deepseek-r1:14b")
-
-    qa_prompt = answer_model(question)
-
-    sql_messages = chatHistoryGet(sql_db = sql_db ,session_id = session_id)
-    messages = [SystemMessage(content = qa_prompt)] + sql_messages + [HumanMessage(content = question)]
-   
-    response = model.invoke(messages)
-
-    chatCreate(sql_db = sql_db,session_id =session_id,role = "HumanMessage",content = question)
-    chatCreate(sql_db = sql_db,session_id =session_id,role = "AIMessage",content = response.content)
-
-    message_list = sql_message_process(sql_db =sql_db, session_id =session_id)
-
-    return ApiResponse(
-        status = "ok",
-        data = ChatResponse(
-            answer = response.content ,
-            chatHistory = message_list ,
-            tag = [])
-    )
-
-# *****
-# 本地环境
-# RagChat函数 本地模型+本地嵌入模型
-# *****
-async def ollamaRagChat(question , memory ,upload_file ,top_k ,sql_db ,session_id):
-    # 嵌入模型  把每个文本块转成向量（变成数字）
-    embedding_model = OllamaEmbeddings(model="bge-large")
-    # 定义模型
-    model = ChatOllama(model="deepseek-r1:14b")
-    # 判断top_k的值，如果非法就报错
-    if top_k < 1 or top_k > 3 :
-        raise HTTPException(status_code=400 , detail="top_k must be between 1 and 3")
-    
-    # 复数写法
-    if upload_file :
-        docs_list = await handle_upload_files(upload_file)
-        # 文档向量化 ，存入数据库 放入(分割好的文件块和嵌入模型，把texts给变成数字)
-        vector_db = FAISS.from_documents(docs_list,embedding_model)
-        save_local_vector_db(session_id = session_id,vector_db =vector_db)       
-            
-    else :
-        local_vector_db = load_local_vector_db(session_id = session_id ,embedding_model = embedding_model)
-        if not local_vector_db:
-            raise HTTPException(status_code=400 , detail="please upload a txt or pdf file first")
-        vector_db = local_vector_db
-    
-    # 把数据库变成一个“检索器”。后面的search_kwargs是固定写法，是搜索参数的意思，必须是要写成字典的形式
-    db_retriever = vector_db.as_retriever(search_kwargs= {"k": top_k}) 
-    
-    qa_prompt = build_qa_prompt(question)
-    # 创建一个“带记忆 + 会检索2资料”的问答链。
-    qa = ConversationalRetrievalChain.from_llm(
-        llm = model ,
-        retriever = db_retriever,
-        memory = memory ,
-        return_source_documents = True ,
-        combine_docs_chain_kwargs = {"prompt":qa_prompt}
-    )
-    # 调用qa这个问答链，invoke（）里面需要传值的东西，是固定的，不用凭空出现，如果不知道需要用print确认 
-    response = qa.invoke({"question" : question})
-
-    result = response["answer"]
-
-    chatCreate(sql_db =sql_db, session_id =session_id,role = "HumanMessage" , content = question)
-    chatCreate(sql_db =sql_db, session_id =session_id,role = "AIMessage" , content = result)
-
-    # chunk_hit = chunk_hit_llm(question ,response ,openai_api_key,sql_db ,session_id)
-
-    message_list = sql_message_process(sql_db =sql_db, session_id =session_id)
-    
-    source_files = []
-    
-    return ApiResponse(
-        status = "ok",
-        data = ChatResponse(
-            answer = result ,
-            chatHistory = message_list ,
-            tag = source_files)
-    )
-
-# *****
-# 本地环境 ，手动化测试用
-# RagChat函数 本地模型+本地嵌入模型 
-# *****
-async def manualRagChat(question , memory ,upload_file ,top_k ,sql_db ,session_id):
-    # 嵌入模型  把每个文本块转成向量（变成数字）
-    embedding_model = OllamaEmbeddings(model="bge-large")
-    # 定义模型
-    model = ChatOllama(model="deepseek-r1:14b")
-    # 判断top_k的值，如果非法就报错
-    if top_k < 1 or top_k > 3 :
-        raise HTTPException(status_code=400 , detail="top_k must be between 1 and 3")
-    
-    # 复数写法
-    if upload_file :
-        docs_list = await handle_upload_files(upload_file)
-        # 文档向量化 ，存入数据库 放入(分割好的文件块和嵌入模型，把texts给变成数字)
-        vector_db = FAISS.from_documents(docs_list,embedding_model)
-        save_local_vector_db(session_id = session_id,vector_db =vector_db)       
-            
-    else :
-        local_vector_db = load_local_vector_db(session_id = session_id ,embedding_model = embedding_model)
-        if not local_vector_db:
-            raise HTTPException(status_code=400 , detail="please upload a txt or pdf file first")
-        vector_db = local_vector_db
-    
-    # 把数据库变成一个“检索器”。后面的search_kwargs是固定写法，是搜索参数的意思，必须是要写成字典的形式
-    db_retriever = vector_db.as_retriever(search_kwargs= {"k": top_k}) 
-
-    sql_messages = chatHistoryGet(sql_db = sql_db ,session_id = session_id)
-
-    # chunk context定义
-    chunk_texts = db_retriever.invoke(question)
-    chunk_map = [chunk_text.page_content for chunk_text in chunk_texts ]
-    chunk_content_text =  "\n".join(chunk_map)
-
-    human_text = f"Context:\n{chunk_content_text}\n\nQuestion:\n{question}"
-
-    qa_prompt = answer_model(question)
-
-    message = [SystemMessage(content = qa_prompt)] + sql_messages + [HumanMessage(content =human_text)]
-
-    response = model.invoke(message)
-
-    # print(response)
-
-    chatCreate(sql_db =sql_db, session_id =session_id,role = "HumanMessage" , content = question)
-    chatCreate(sql_db =sql_db, session_id =session_id,role = "AIMessage" , content = response.content)
-
-    chunk_hit = chunk_hit_llm(question ,chunk_texts ,sql_db ,session_id)
-
-    message_list = sql_message_process(sql_db =sql_db, session_id =session_id)
-    
-    source_files = [chunk_hit]
-    
-    return ApiResponse(
-        status = "ok",
-        data = ChatResponse(
-            answer = response.content ,
-            chatHistory = message_list ,
-            tag = source_files)
     )
 
 # *****
@@ -341,11 +193,12 @@ def chunk_hit(chunk_texts):
 # *****
 # 命中文件来源llm
 # *****
-def chunk_hit_llm(question ,chunk_texts ,sql_db ,session_id):
+def chunk_hit_llm(question ,chunk_texts ,sql_db ,session_id ,openai_api_key ,model_flag):
     ai_text_all = chunk_hit(chunk_texts)
 
-    # model = ChatOpenAI(model="gpt-3.5-turbo",openai_api_key=openai_api_key)
-    model = ChatOllama(model="deepseek-r1:14b")
+    ai_model ,_ =ai_model_select(model_flag ,openai_api_key)
+    model = ai_model
+
     prompt = chunk_hit_prompt()
     
     history_list = chatHistoryGet(sql_db = sql_db,session_id = session_id)
@@ -363,10 +216,11 @@ def chunk_hit_llm(question ,chunk_texts ,sql_db ,session_id):
     return chunk_response.content
 
 # *****
-# 判断「概括/总结整份上传文件的整体内容」llm
+# 判断此次问题是否需要summary
 # *****
-def summary(question ,openai_api_key):
-    model = ChatOpenAI(model="gpt-3.5-turbo",openai_api_key =openai_api_key)
+def summary(question ,openai_api_key ,model_flag):
+    ai_model ,_ =ai_model_select(model_flag ,openai_api_key)
+    model = ai_model
 
     prompt = summary_prompt()
 
@@ -377,23 +231,27 @@ def summary(question ,openai_api_key):
     return summary_response.content
 
 # *****
-# 提取response结果
+# 向量库检索 ，提取chunk结果
 # *****
-def summary_texts(response):
+def chunk_context(vector_db ,top_k ,question):
+    # 把数据库变成一个“检索器”。后面的search_kwargs是固定写法，是搜索参数的意思，必须是要写成字典的形式
+    db_retriever = vector_db.as_retriever(search_kwargs= {"k": top_k}) 
 
-    summary_text_map = [doc.page_content for doc in response["source_documents"]]
+    # chunk context定义
+    chunk_texts = db_retriever.invoke(question)
+    chunk_map = [chunk_text.page_content for chunk_text in chunk_texts ]
+    chunk_content_text =  "\n".join(chunk_map)
 
-    summary_text = "\n".join(summary_text_map)
-
-    return summary_text
+    return chunk_content_text ,chunk_texts
 
 # *****
-# 判断「结果生成回答」llm
+# 通过搜索到的chunk生成回答问题
 # *****
-def summary_answer(openai_api_key ,response):
-    text = summary_texts(response)
+def summary_answer(openai_api_key ,vector_db ,top_k ,question ,model_flag):
+    text ,_ = chunk_context(vector_db ,top_k ,question)
 
-    model = ChatOpenAI(model="gpt-3.5-turbo",openai_api_key =openai_api_key)
+    ai_model ,_ =ai_model_select(model_flag ,openai_api_key)
+    model = ai_model
 
     prompt = summary_answer_prompt()
 
@@ -449,7 +307,7 @@ def sql_message_process(sql_db ,session_id):
     return message_list
 
 # *****
-# 回复模型判断
+# 回复模式判断
 # *****  
 def answer_model(question):
     simple_words = ["简单","简洁","简短","少废话","易懂","少例子"]
@@ -465,3 +323,19 @@ def answer_model(question):
         qa_prompt = defult_normalChat()
 
     return qa_prompt 
+
+
+# *****
+# ai模型选择
+# *****  
+def ai_model_select(model_flag ,openai_api_key):
+    if model_flag == "openai" :
+        ai_model = ChatOpenAI(model="gpt-3.5-turbo",openai_api_key =openai_api_key)
+        embedding_model = OpenAIEmbeddings(openai_api_key = openai_api_key)
+    elif model_flag == "ollama" :
+        ai_model = ChatOllama(model="deepseek-r1:14b")
+        embedding_model = OllamaEmbeddings(model="bge-large")
+    else :
+        raise HTTPException(status_code=500 ,detail="modle is miss")
+    
+    return ai_model ,embedding_model
